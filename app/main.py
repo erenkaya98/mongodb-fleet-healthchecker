@@ -8,16 +8,16 @@ import asyncio
 import logging
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from app.api import router
 from app.config import settings
 from app.db import connect, disconnect
-from app.api import router
 from app.scheduler import get_scheduler, setup_signal_handlers
-from pathlib import Path
 
 # ── Logging setup ───────────────────────────────────────────────
 

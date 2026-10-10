@@ -1,15 +1,14 @@
-# collector.py test suite — aiohttp test server ile sahte exporter
+# collector.py test suite - fake exporter served by the aiohttp test server
 
 from __future__ import annotations
 
 import asyncio
-import os
+
 import pytest
 from aiohttp import web
 
 from app.collector import MetricsCollector
-from app.models import TargetInDB, Status
-
+from app.models import TargetInDB
 
 # ── Fake exporter server ────────────────────────────────────────
 
@@ -139,9 +138,7 @@ class TestCollectorSuccess:
         target.exporter_url = f"http://{host}:{port}/metrics"
 
         result = await collector.scrape_target(target)
-        mongodb_up_samples = [
-            s for s in result.samples if s.name == "mongodb_up"
-        ]
+        mongodb_up_samples = [s for s in result.samples if s.name == "mongodb_up"]
         assert len(mongodb_up_samples) == 1
         assert mongodb_up_samples[0].value == 1.0
 
@@ -258,7 +255,9 @@ class MockCollection:
 class MockAdmin:
     """Mock admin DB for commands."""
 
-    def __init__(self, server_status: dict | None = None, replset_status: dict | None = None) -> None:
+    def __init__(
+        self, server_status: dict | None = None, replset_status: dict | None = None
+    ) -> None:
         self._server_status = server_status or {}
         self._replset_status = replset_status or {"ok": 0}
 
@@ -301,7 +300,7 @@ async def direct_collector():
 
 
 class TestDirectCollector:
-    """DirectCollector birim testleri (mock MongoDB ile)."""
+    """DirectCollector unit tests (with a mocked MongoDB)."""
 
     @pytest.mark.asyncio
     async def test_start_stop(self):
@@ -317,10 +316,12 @@ class TestDirectCollector:
     @pytest.mark.asyncio
     async def test_scrape_ok_and_up_always_present(self, direct_collector, monkeypatch):
         """scrape_ok and mongodb_up must always be present in the samples."""
-        admin = MockAdmin(server_status={
-            "ok": 1,
-            "connections": {"current": 10, "available": 100},
-        })
+        admin = MockAdmin(
+            server_status={
+                "ok": 1,
+                "connections": {"current": 10, "available": 100},
+            }
+        )
         mock_client = MockClient(admin=admin)
 
         # _get_client override
@@ -348,10 +349,12 @@ class TestDirectCollector:
     @pytest.mark.asyncio
     async def test_connections_metric(self, direct_collector, monkeypatch):
         """mongodb_ss_connections must be emitted with current/available labels."""
-        admin = MockAdmin(server_status={
-            "ok": 1,
-            "connections": {"current": 42, "available": 51158},
-        })
+        admin = MockAdmin(
+            server_status={
+                "ok": 1,
+                "connections": {"current": 42, "available": 51158},
+            }
+        )
         mock_client = MockClient(admin=admin)
         monkeypatch.setattr(direct_collector, "_get_client", lambda t: mock_client)
 
@@ -391,11 +394,15 @@ class TestDirectCollector:
         assert state.value == 1.0
 
         # member count
-        count = next(s for s in result.samples if s.name == "mongodb_mongod_replset_number_of_members")
+        count = next(
+            s for s in result.samples if s.name == "mongodb_mongod_replset_number_of_members"
+        )
         assert count.value == 3.0
 
         # member health (3 samples)
-        health_samples = [s for s in result.samples if s.name == "mongodb_mongod_replset_member_health"]
+        health_samples = [
+            s for s in result.samples if s.name == "mongodb_mongod_replset_member_health"
+        ]
         assert len(health_samples) == 3
         health_by_member = {s.labels["member"]: s.value for s in health_samples}
         assert health_by_member["node1:27017"] == 1.0
@@ -403,7 +410,9 @@ class TestDirectCollector:
         assert health_by_member["node3:27017"] == 0.0
 
         # replication lag
-        lag_samples = [s for s in result.samples if s.name == "mongodb_mongod_replset_member_replication_lag"]
+        lag_samples = [
+            s for s in result.samples if s.name == "mongodb_mongod_replset_member_replication_lag"
+        ]
         assert len(lag_samples) == 3
         lag_by_member = {s.labels["member"]: s.value for s in lag_samples}
         assert lag_by_member["node2:27017"] == 2.0
@@ -443,7 +452,11 @@ class TestDirectCollector:
 
         # Mock returning a different client per target
         _call_count = [0]
-        _clients = [MockClient(admin=admin_ok), MockClient(admin=FailingAdmin()), MockClient(admin=admin_ok)]
+        _clients = [
+            MockClient(admin=admin_ok),
+            MockClient(admin=FailingAdmin()),
+            MockClient(admin=admin_ok),
+        ]
 
         def get_client(target):
             idx = _call_count[0]
@@ -471,7 +484,9 @@ class TestDirectCollector:
         exporter_target = TargetInDB(ip="10.0.0.1", enabled=True)
         assert exporter_target.collection_mode == "exporter"
 
-        direct_target = TargetInDB(ip="10.0.0.1", mongo_uri="mongodb://localhost:27017", enabled=True)
+        direct_target = TargetInDB(
+            ip="10.0.0.1", mongo_uri="mongodb://localhost:27017", enabled=True
+        )
         assert direct_target.collection_mode == "direct"
 
 
@@ -481,27 +496,29 @@ class TestDirectCollectorWiredTiger:
     @pytest.mark.asyncio
     async def test_wt_cache_metrics(self, direct_collector, monkeypatch):
         """serverStatus.wiredTiger -> cache + ticket metrics must be emitted."""
-        admin = MockAdmin(server_status={
-            "ok": 1,
-            "connections": {},
-            "wiredTiger": {
-                "cache": {
-                    "maximum bytes configured": 1_000_000_000,
-                    "bytes currently in the cache": 500_000_000,
-                    "tracked dirty bytes in the cache": 50_000_000,
-                    "bytes read into cache": 10_000_000_000,
-                    "bytes written from cache": 5_000_000_000,
+        admin = MockAdmin(
+            server_status={
+                "ok": 1,
+                "connections": {},
+                "wiredTiger": {
+                    "cache": {
+                        "maximum bytes configured": 1_000_000_000,
+                        "bytes currently in the cache": 500_000_000,
+                        "tracked dirty bytes in the cache": 50_000_000,
+                        "bytes read into cache": 10_000_000_000,
+                        "bytes written from cache": 5_000_000_000,
+                    },
+                    "concurrentTransactions": {
+                        "read": {"available": 128, "out": 0, "total": 128},
+                        "write": {"available": 128, "out": 0, "total": 128},
+                    },
+                    "transaction": {
+                        "transaction checkpoint min time (msecs)": 100,
+                        "transaction checkpoint max time (msecs)": 5000,
+                    },
                 },
-                "concurrentTransactions": {
-                    "read": {"available": 128, "out": 0, "total": 128},
-                    "write": {"available": 128, "out": 0, "total": 128},
-                },
-                "transaction": {
-                    "transaction checkpoint min time (msecs)": 100,
-                    "transaction checkpoint max time (msecs)": 5000,
-                },
-            },
-        })
+            }
+        )
         mock_client = MockClient(admin=admin)
         monkeypatch.setattr(direct_collector, "_get_client", lambda t: mock_client)
 
@@ -527,11 +544,13 @@ class TestDirectCollectorWiredTiger:
     @pytest.mark.asyncio
     async def test_wt_metrics_missing_no_crash(self, direct_collector, monkeypatch):
         """Without WiredTiger (MMAPv1/InMemory) it must not crash, just emit no samples."""
-        admin = MockAdmin(server_status={
-            "ok": 1,
-            "connections": {},
-            # wiredTiger yok
-        })
+        admin = MockAdmin(
+            server_status={
+                "ok": 1,
+                "connections": {},
+                # wiredTiger yok
+            }
+        )
         mock_client = MockClient(admin=admin)
         monkeypatch.setattr(direct_collector, "_get_client", lambda t: mock_client)
 
@@ -547,24 +566,26 @@ class TestDirectCollectorWiredTiger:
     async def test_wt_tickets_absent_on_mongodb8(self, direct_collector, monkeypatch):
         """MongoDB 8.0 removed concurrentTransactions - no ticket samples at all
         (emitting 0 would trigger a false saturation alarm)."""
-        admin = MockAdmin(server_status={
-            "ok": 1,
-            "connections": {},
-            "wiredTiger": {
-                "cache": {
-                    "maximum bytes configured": 1_000_000_000,
-                    "bytes currently in the cache": 800_000_000,
-                    "tracked dirty bytes in the cache": 10_000_000,
-                    "bytes read into cache": 5_000_000_000,
-                    "bytes written from cache": 2_000_000_000,
+        admin = MockAdmin(
+            server_status={
+                "ok": 1,
+                "connections": {},
+                "wiredTiger": {
+                    "cache": {
+                        "maximum bytes configured": 1_000_000_000,
+                        "bytes currently in the cache": 800_000_000,
+                        "tracked dirty bytes in the cache": 10_000_000,
+                        "bytes read into cache": 5_000_000_000,
+                        "bytes written from cache": 2_000_000_000,
+                    },
+                    # 8.0: concurrentTransactions yok
+                    "transaction": {
+                        "transaction checkpoint min time (msecs)": 50,
+                        "transaction checkpoint max time (msecs)": 3000,
+                    },
                 },
-                # 8.0: concurrentTransactions yok
-                "transaction": {
-                    "transaction checkpoint min time (msecs)": 50,
-                    "transaction checkpoint max time (msecs)": 3000,
-                },
-            },
-        })
+            }
+        )
         mock_client = MockClient(admin=admin)
         monkeypatch.setattr(direct_collector, "_get_client", lambda t: mock_client)
 
@@ -581,7 +602,7 @@ class TestDirectCollectorWiredTiger:
 
 
 class TestDirectCollectorVersion:
-    """Versiyon ve FCV toplama testleri."""
+    """Version and FCV collection tests."""
 
     @pytest.mark.asyncio
     async def test_build_info_version(self, direct_collector, monkeypatch):

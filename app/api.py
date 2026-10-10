@@ -6,43 +6,40 @@ from __future__ import annotations
 import csv
 import io
 import json
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.models import (
     TargetCreate,
     TargetUpdate,
-    FleetStatus,
 )
+from app.scheduler import INSTANCE_ID, get_scheduler
 from app.store import (
-    get_targets,
-    get_target,
-    create_target,
-    update_target,
-    delete_target,
-    toggle_target,
     bulk_import_targets,
-    get_runs,
+    create_target,
+    delete_target,
+    get_active_alerts,
+    get_all_slow_query_docs,
+    get_fleet_status,
+    get_last_run,
+    get_resolved_alerts,
     get_run,
     get_run_results,
-    get_last_run,
-    get_target_history,
-    get_fleet_status,
-    get_active_alerts,
-    get_resolved_alerts,
-    silence_alert,
-    silence_alerts_bulk,
+    get_runs,
     get_slow_queries,
     get_slow_query_summary,
-    get_all_slow_query_docs,
+    get_target,
+    get_target_history,
+    get_targets,
+    silence_alert,
+    silence_alerts_bulk,
+    toggle_target,
+    update_target,
 )
-from app.scheduler import get_scheduler, INSTANCE_ID
 
 router = APIRouter()
 
@@ -50,8 +47,9 @@ router = APIRouter()
 # Starlette >=0.28 passes context as globals to get_template(), and Jinja2
 # tries to include the entire context dict in the cache key. Pydantic models
 # with nested dict fields (clusters, envs, labels) are unhashable → TypeError.
-from fastapi.templating import Jinja2Templates as _Jinja2Templates
 from pathlib import Path
+
+from fastapi.templating import Jinja2Templates as _Jinja2Templates
 
 
 class _SafeTemplates(_Jinja2Templates):
@@ -87,7 +85,7 @@ def _localtime(dt: datetime, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
         return ""
     if dt.tzinfo is None:
         # Naive datetimes are assumed to be UTC (as they come from the database)
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt.astimezone(_display_tz()).strftime(fmt)
 
 
@@ -95,7 +93,7 @@ templates.env.filters["localtime"] = _localtime
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # ── Health ──────────────────────────────────────────────────────
@@ -113,8 +111,8 @@ async def readyz():
     try:
         await get_last_run()
         return {"status": "ready", "instance": INSTANCE_ID}
-    except Exception:
-        raise HTTPException(503, "Not ready")
+    except Exception as exc:
+        raise HTTPException(503, "Not ready") from exc
 
 
 @router.get("/metrics")
@@ -132,7 +130,7 @@ async def own_metrics():
         f'healthchecker_targets_status{{status="critical"}} {fleet.critical}',
         f'healthchecker_targets_status{{status="unknown"}} {fleet.unknown}',
         f"healthchecker_last_run_duration_ms {fleet.last_duration_ms}",
-        f"healthchecker_info{{instance=\"{INSTANCE_ID}\"}} 1",
+        f'healthchecker_info{{instance="{INSTANCE_ID}"}} 1',
     ]
     return JSONResponse(
         content="\n".join(lines) + "\n",
@@ -225,20 +223,22 @@ async def api_bulk_import(request: Request):
                 return default
 
         for row in reader:
-            targets.append(TargetCreate(
-                ip=row["ip"],
-                port=_as_int(row.get("port"), 9216),
-                mongo_port=_as_int(row.get("mongo_port"), 27017),
-                hostname=row.get("hostname"),
-                cluster=row.get("cluster"),
-                role=row.get("role"),
-                env=row.get("env"),
-                enabled=_as_bool(row.get("enabled", True)),
-                exporter_url=row.get("exporter_url") or None,
-                mongo_uri=row.get("mongo_uri") or None,
-                check_profile=row.get("check_profile") or "default",
-                notes=row.get("notes") or None,
-            ))
+            targets.append(
+                TargetCreate(
+                    ip=row["ip"],
+                    port=_as_int(row.get("port"), 9216),
+                    mongo_port=_as_int(row.get("mongo_port"), 27017),
+                    hostname=row.get("hostname"),
+                    cluster=row.get("cluster"),
+                    role=row.get("role"),
+                    env=row.get("env"),
+                    enabled=_as_bool(row.get("enabled", True)),
+                    exporter_url=row.get("exporter_url") or None,
+                    mongo_uri=row.get("mongo_uri") or None,
+                    check_profile=row.get("check_profile") or "default",
+                    notes=row.get("notes") or None,
+                )
+            )
     else:
         raise HTTPException(400, "Unsupported content type. Use JSON or CSV.")
 
@@ -287,9 +287,9 @@ async def api_run_results(run_id: str):
 @router.get("/targets/add-form", response_class=HTMLResponse)
 async def add_target_form(request: Request):
     """Yeni target ekleme formu."""
-    return templates.TemplateResponse("target_form.html", {
-        "request": request, "target": None, "action": "add"
-    })
+    return templates.TemplateResponse(
+        "target_form.html", {"request": request, "target": None, "action": "add"}
+    )
 
 
 @router.get("/targets/{target_id}/edit-form", response_class=HTMLResponse)
@@ -298,9 +298,9 @@ async def edit_target_form(request: Request, target_id: str):
     target = await get_target(target_id)
     if not target:
         raise HTTPException(404, "Target not found")
-    return templates.TemplateResponse("target_form.html", {
-        "request": request, "target": target, "action": "edit"
-    })
+    return templates.TemplateResponse(
+        "target_form.html", {"request": request, "target": target, "action": "edit"}
+    )
 
 
 @router.get("/targets/bulk-form", response_class=HTMLResponse)
@@ -314,28 +314,28 @@ async def handle_add_target(request: Request):
     """HTMX form submit handler — yeni target ekle."""
     form = await request.form()
     try:
-        target = await create_target(TargetCreate(
-            ip=str(form.get("ip", "")),
-            port=int(form.get("port", 9216)),
-            mongo_port=int(form.get("mongo_port", 27017)),
-            hostname=str(form.get("hostname", "")) or None,
-            cluster=str(form.get("cluster", "")) or None,
-            role=str(form.get("role", "")) or None,
-            env=str(form.get("env", "")) or None,
-            enabled=form.get("enabled", "on") == "on",
-            check_profile=str(form.get("check_profile", "default")),
-            notes=str(form.get("notes", "")) or None,
-            exporter_url=str(form.get("exporter_url", "")) or None,
-            mongo_uri=str(form.get("mongo_uri", "")) or None,
-        ))
+        await create_target(
+            TargetCreate(
+                ip=str(form.get("ip", "")),
+                port=int(form.get("port", 9216)),
+                mongo_port=int(form.get("mongo_port", 27017)),
+                hostname=str(form.get("hostname", "")) or None,
+                cluster=str(form.get("cluster", "")) or None,
+                role=str(form.get("role", "")) or None,
+                env=str(form.get("env", "")) or None,
+                enabled=form.get("enabled", "on") == "on",
+                check_profile=str(form.get("check_profile", "default")),
+                notes=str(form.get("notes", "")) or None,
+                exporter_url=str(form.get("exporter_url", "")) or None,
+                mongo_uri=str(form.get("mongo_uri", "")) or None,
+            )
+        )
         return HTMLResponse(
-            f'<script>document.getElementById("modal-overlay").classList.remove("active");'
-            f'window.location.reload();</script>'
+            '<script>document.getElementById("modal-overlay").classList.remove("active");'
+            "window.location.reload();</script>"
         )
     except Exception as e:
-        return HTMLResponse(
-            f'<div class="toast toast-error">{e}</div>', status_code=400
-        )
+        return HTMLResponse(f'<div class="toast toast-error">{e}</div>', status_code=400)
 
 
 # ── Alerts ─────────────────────────────────────────────────────
@@ -386,7 +386,7 @@ async def api_run_now():
 
 
 # ── UI Pages (HTMX) ───────────────────────────────────────────
-# Sayfalar Jinja2 ile server-side render edilir.
+# Pages are server-side rendered with Jinja2.
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -480,7 +480,10 @@ async def api_slow_queries(
 ):
     """Snapshotted slow queries (JSON)."""
     return await get_slow_queries(
-        target_id=target_id, hostname=hostname, min_ms=min_ms, limit=limit,
+        target_id=target_id,
+        hostname=hostname,
+        min_ms=min_ms,
+        limit=limit,
     )
 
 
@@ -497,6 +500,7 @@ async def ui_slow_queries_page(request: Request):
     queries = await get_slow_queries(limit=100)
     docs = await get_all_slow_query_docs()
     from app.index_suggestions import analyze_slow_queries
+
     suggestions = analyze_slow_queries(docs)
 
     # host -> index suggestions for that host (ordered by severity)
@@ -522,6 +526,7 @@ async def api_index_suggestions():
     """Index suggestions derived from snapshots (JSON)."""
     docs = await get_all_slow_query_docs()
     from app.index_suggestions import analyze_slow_queries
+
     return analyze_slow_queries(docs)
 
 
@@ -530,6 +535,7 @@ async def ui_index_suggestions_page(request: Request):
     """Index suggestions page."""
     docs = await get_all_slow_query_docs()
     from app.index_suggestions import analyze_slow_queries
+
     suggestions = analyze_slow_queries(docs)
     return templates.TemplateResponse(
         "index_suggestions.html",

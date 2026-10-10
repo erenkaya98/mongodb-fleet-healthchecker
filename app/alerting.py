@@ -7,10 +7,9 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 import aiohttp
 
@@ -18,15 +17,15 @@ from app.config import settings
 from app.models import (
     AlertRecord,
     AlertState,
-    Status,
     CheckResult,
+    Status,
     TargetInDB,
     TargetResult,
 )
 from app.store import (
     get_alert,
-    upsert_alert,
     get_target_state,
+    upsert_alert,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,9 +44,7 @@ _SEVERITY_EMOJI = {
     Status.UNKNOWN: "❓",
 }
 
-_MIN_SEVERITY_LEVEL = _SEVERITY_ORDER.get(
-    Status(settings.alert_min_severity), 1
-)
+_MIN_SEVERITY_LEVEL = _SEVERITY_ORDER.get(Status(settings.alert_min_severity), 1)
 
 
 def make_fingerprint(target_id: str, rule_id: str) -> str:
@@ -86,7 +83,7 @@ async def send_alert_storm_batch(
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 async def _handle_ok(
@@ -95,7 +92,7 @@ async def _handle_ok(
     target_result: TargetResult,
     session: aiohttp.ClientSession,
 ) -> None:
-    """OK durumu: mevcut alert varsa resolved yap."""
+    """OK status: resolve the existing alert, if any."""
     fp = make_fingerprint(str(target.id), check.rule_id)
     existing = await get_alert(fp)
 
@@ -111,7 +108,9 @@ async def _handle_ok(
 
         logger.info(
             "Alert resolved: %s → %s (rule=%s)",
-            target.hostname or target.ip, check.rule_id, check.status.value,
+            target.hostname or target.ip,
+            check.rule_id,
+            check.status.value,
         )
 
 
@@ -162,7 +161,9 @@ async def _handle_bad(
             await _send_webhook(session, _build_firing_payload(existing, target, check))
             logger.warning(
                 "Alert FIRING: %s / %s → %s",
-                target.hostname or target.ip, check.rule_id, check.status.value,
+                target.hostname or target.ip,
+                check.rule_id,
+                check.status.value,
             )
         else:
             # Consecutive threshold not reached yet
@@ -185,21 +186,23 @@ async def _handle_bad(
             should_send = True
             logger.warning(
                 "Alert ESCALATED: %s / %s → %s",
-                target.hostname or target.ip, check.rule_id, check.status.value,
+                target.hostname or target.ip,
+                check.rule_id,
+                check.status.value,
             )
         elif settings.alert_renotify_minutes > 0:
             # Cooldown check
             if existing.last_sent_at:
                 last_sent = existing.last_sent_at
                 if last_sent.tzinfo is None:
-                    last_sent = last_sent.replace(tzinfo=timezone.utc)
+                    last_sent = last_sent.replace(tzinfo=UTC)
                 minutes_since = (now - last_sent).total_seconds() / 60
                 if minutes_since >= settings.alert_renotify_minutes:
                     should_send = True
             else:
                 should_send = True
         else:
-            should_send = True  # renotify_minutes == 0 → her seferde
+            should_send = True  # renotify_minutes == 0 -> every run
 
         if should_send:
             existing.last_sent_at = now
@@ -208,7 +211,9 @@ async def _handle_bad(
             await _send_webhook(session, _build_firing_payload(existing, target, check))
             logger.info(
                 "Alert RENOTIFY: %s / %s (#%d)",
-                target.hostname or target.ip, check.rule_id, existing.send_count,
+                target.hostname or target.ip,
+                check.rule_id,
+                existing.send_count,
             )
 
         await upsert_alert(existing)
@@ -225,7 +230,8 @@ async def _handle_bad(
         await upsert_alert(existing)
         logger.info(
             "Alert re-triggered: %s / %s → PENDING",
-            target.hostname or target.ip, check.rule_id,
+            target.hostname or target.ip,
+            check.rule_id,
         )
 
 
@@ -263,21 +269,23 @@ async def _send_webhook(
                     return True
                 logger.warning(
                     "Webhook HTTP %d (attempt %d/%d)",
-                    resp.status, attempt + 1, retries + 1,
+                    resp.status,
+                    attempt + 1,
+                    retries + 1,
                 )
         except Exception as e:
             logger.error(
                 "Webhook send failed (attempt %d/%d): %s",
-                attempt + 1, retries + 1, e,
+                attempt + 1,
+                retries + 1,
+                e,
             )
 
     logger.error("Webhook send failed (all retries exhausted)")
     return False
 
 
-def _format_payload(
-    payload: dict[str, Any], format_type: str
-) -> dict[str, Any]:
+def _format_payload(payload: dict[str, Any], format_type: str) -> dict[str, Any]:
     """Convert the payload to the configured format."""
     if format_type == "slack":
         return _to_slack(payload)
@@ -286,9 +294,7 @@ def _format_payload(
     return payload  # generic — direkt JSON
 
 
-def _build_alert_payload(
-    target: TargetInDB, check: CheckResult
-) -> dict[str, Any]:
+def _build_alert_payload(target: TargetInDB, check: CheckResult) -> dict[str, Any]:
     """Alert payload (persisted to the database)."""
     return {
         "target_id": str(target.id),
@@ -305,9 +311,7 @@ def _build_alert_payload(
         "warning_threshold": check.warning_threshold,
         "critical_threshold": check.critical_threshold,
         "message": check.message,
-        "dashboard_url": (
-            f"{settings.dashboard_base_url}/targets/{target.id}"
-        ),
+        "dashboard_url": (f"{settings.dashboard_base_url}/targets/{target.id}"),
     }
 
 
@@ -393,7 +397,7 @@ def _build_storm_payload(
             "status": r.status.value,
             "message": r.message,
         }
-        for t, r in zip(targets, results)
+        for t, r in zip(targets, results, strict=False)
     ]
     return {
         "type": "alert_storm",
@@ -410,7 +414,6 @@ def _build_storm_payload(
 
 def _to_slack(payload: dict[str, Any]) -> dict[str, Any]:
     """Convert to Slack Block Kit format."""
-    state = payload.get("state", "firing")
     title = payload.get("title", "Alert")
     target = payload.get("target", {})
     result = payload.get("result", {})
@@ -440,22 +443,26 @@ def _to_slack(payload: dict[str, Any]) -> dict[str, Any]:
     ]
 
     if result.get("message"):
-        blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": result["message"]},
-        })
+        blocks.append(
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": result["message"]},
+            }
+        )
 
     if url:
-        blocks.append({
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "Dashboard"},
-                    "url": url,
-                }
-            ],
-        })
+        blocks.append(
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Dashboard"},
+                        "url": url,
+                    }
+                ],
+            }
+        )
 
     return {
         "attachments": [

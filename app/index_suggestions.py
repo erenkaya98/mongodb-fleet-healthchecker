@@ -29,10 +29,10 @@ def build_index_keys(filter_keys: list, sort: dict) -> list[tuple[str, int]]:
     guideline and is a reasonable starting point.
     """
     keys: list[tuple[str, int]] = []
-    sort_fields = [f for f in sort.keys() if f != "_id"] if isinstance(sort, dict) else []
+    sort_fields = [f for f in sort if f != "_id"] if isinstance(sort, dict) else []
 
     for f in filter_keys or []:
-        # _id zaten her koleksiyonda benzersiz index'li; dahil etme
+        # _id already has a unique index in every collection; skip it
         if _is_field(f) and f != "_id" and f not in sort_fields:
             keys.append((f, 1))
 
@@ -80,8 +80,10 @@ def suggest_for_query(q: dict) -> dict:
             "ns": ns,
             "coll": coll,
             "severity": "info",
-            "reason": (f"getMore (cursor devamı) — plan orijinal sorguya ait değil. "
-                       f"{millis}ms, {docs or '?'} doküman okundu"),
+            "reason": (
+                f"getMore (cursor devamı) — plan orijinal sorguya ait değil. "
+                f"{millis}ms, {docs or '?'} doküman okundu"
+            ),
             "plan_summary": plan,
             "millis": millis,
             "docs_examined": docs,
@@ -103,12 +105,10 @@ def suggest_for_query(q: dict) -> dict:
         reason = f"COLLSCAN — {docs or '?'} doküman full scan (uygun index yok)"
     elif ratio is not None and ratio >= 1000:
         severity = "critical"
-        reason = (f"Seçicilik çok düşük: {docs} tarandı → {nret} döndü "
-                  f"({ratio:.0f}x oran)")
+        reason = f"Seçicilik çok düşük: {docs} tarandı → {nret} döndü ({ratio:.0f}x oran)"
     elif ratio is not None and ratio >= 100:
         severity = "warning"
-        reason = (f"Seçicilik düşük: {docs} tarandı → {nret} döndü "
-                  f"({ratio:.0f}x oran)")
+        reason = f"Seçicilik düşük: {docs} tarandı → {nret} döndü ({ratio:.0f}x oran)"
     elif millis >= 5000:
         severity = "warning"
         reason = f"Yavaş sorgu ({millis}ms), index optimizasyonu değerlendirilmeli"
@@ -147,7 +147,7 @@ def analyze_slow_queries(queries: list[dict]) -> list[dict]:
             by_ns[ns].append(q)
 
     suggestions: list[dict] = []
-    for ns, qs in by_ns.items():
+    for _ns, qs in by_ns.items():
         # Pick a representative: prefer entries with a NON-EMPTY filter_keys (getMore
         # entries have empty filter_keys and carry a misleading plan), then the slowest.
         # getMore entries cannot produce suggestions - exclude them.

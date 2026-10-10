@@ -5,29 +5,27 @@
 
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import UTC
+from unittest.mock import AsyncMock, patch
 
-import pytest
 import aiohttp
+import pytest
 
+from app.alerting import (
+    _handle_bad,
+    _handle_ok,
+    _to_slack,
+    _to_teams,
+    make_fingerprint,
+)
 from app.models import (
     AlertRecord,
     AlertState,
-    Status,
     CheckResult,
+    Status,
     TargetInDB,
     TargetResult,
     TargetState,
-)
-from app.alerting import (
-    make_fingerprint,
-    process_check_result,
-    _handle_ok,
-    _handle_bad,
-    _to_slack,
-    _to_teams,
-    _format_payload,
 )
 
 
@@ -121,7 +119,12 @@ class TestFormatting:
             "state": "firing",
             "severity": "critical",
             "title": "🔥 Test Alert",
-            "target": {"hostname": "db01", "cluster": "prod", "env": "production", "role": "shardsvr"},
+            "target": {
+                "hostname": "db01",
+                "cluster": "prod",
+                "env": "production",
+                "role": "shardsvr",
+            },
             "result": {"measured_value": 0.0, "message": "test"},
             "dashboard_url": "http://localhost:8000",
         }
@@ -136,7 +139,12 @@ class TestFormatting:
             "state": "firing",
             "severity": "warning",
             "title": "⚠️ Warning",
-            "target": {"hostname": "db02", "cluster": "staging", "env": "staging", "role": "default"},
+            "target": {
+                "hostname": "db02",
+                "cluster": "staging",
+                "env": "staging",
+                "role": "default",
+            },
             "result": {"message": "test"},
             "dashboard_url": "http://localhost:8000",
         }
@@ -184,9 +192,7 @@ class TestAlertStateMachine:
     ):
         """PENDING durumdayken consecutive=1 → hâlâ PENDING."""
         existing = AlertRecord(
-            fingerprint=make_fingerprint(
-                str(sample_target.id), sample_check_critical.rule_id
-            ),
+            fingerprint=make_fingerprint(str(sample_target.id), sample_check_critical.rule_id),
             target_id=str(sample_target.id),
             rule_id=sample_check_critical.rule_id,
             severity=Status.CRITICAL,
@@ -219,9 +225,7 @@ class TestAlertStateMachine:
     ):
         """PENDING + consecutive=2 -> FIRING, webhook must be sent."""
         existing = AlertRecord(
-            fingerprint=make_fingerprint(
-                str(sample_target.id), sample_check_critical.rule_id
-            ),
+            fingerprint=make_fingerprint(str(sample_target.id), sample_check_critical.rule_id),
             target_id=str(sample_target.id),
             rule_id=sample_check_critical.rule_id,
             severity=Status.CRITICAL,
@@ -253,16 +257,15 @@ class TestAlertStateMachine:
         self, sample_target, sample_check_critical, sample_target_result
     ):
         """While FIRING, renotify once the cooldown has passed."""
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta
+
         existing = AlertRecord(
-            fingerprint=make_fingerprint(
-                str(sample_target.id), sample_check_critical.rule_id
-            ),
+            fingerprint=make_fingerprint(str(sample_target.id), sample_check_critical.rule_id),
             target_id=str(sample_target.id),
             rule_id=sample_check_critical.rule_id,
             severity=Status.CRITICAL,
             state=AlertState.FIRING,
-            last_sent_at=datetime.now(timezone.utc) - timedelta(minutes=61),
+            last_sent_at=datetime.now(UTC) - timedelta(minutes=61),
             send_count=1,
         )
 
@@ -284,16 +287,15 @@ class TestAlertStateMachine:
         self, sample_target, sample_check_critical, sample_target_result
     ):
         """FIRING durumda, cooldown dolmadan bildirim gitmesin."""
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta
+
         existing = AlertRecord(
-            fingerprint=make_fingerprint(
-                str(sample_target.id), sample_check_critical.rule_id
-            ),
+            fingerprint=make_fingerprint(str(sample_target.id), sample_check_critical.rule_id),
             target_id=str(sample_target.id),
             rule_id=sample_check_critical.rule_id,
             severity=Status.CRITICAL,
             state=AlertState.FIRING,
-            last_sent_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+            last_sent_at=datetime.now(UTC) - timedelta(minutes=5),
             send_count=1,
         )
 
@@ -309,11 +311,9 @@ class TestAlertStateMachine:
                     assert not mock_send.called
 
     @pytest.mark.asyncio
-    async def test_escalation_bypasses_cooldown(
-        self, sample_target, sample_target_result
-    ):
+    async def test_escalation_bypasses_cooldown(self, sample_target, sample_target_result):
         """WARNING -> CRITICAL escalation must bypass the cooldown."""
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta
 
         check_crit = CheckResult(
             rule_id="replication_lag",
@@ -329,7 +329,7 @@ class TestAlertStateMachine:
             rule_id=check_crit.rule_id,
             severity=Status.WARNING,  # previously WARNING
             state=AlertState.FIRING,
-            last_sent_at=datetime.now(timezone.utc) - timedelta(minutes=5),  # inside the cooldown
+            last_sent_at=datetime.now(UTC) - timedelta(minutes=5),  # inside the cooldown
         )
 
         with patch("app.alerting.get_alert", new=AsyncMock(return_value=existing)):
@@ -349,9 +349,7 @@ class TestAlertStateMachine:
     ):
         """OK gelince FIRING → RESOLVED + resolve bildirimi."""
         existing = AlertRecord(
-            fingerprint=make_fingerprint(
-                str(sample_target.id), sample_check_ok.rule_id
-            ),
+            fingerprint=make_fingerprint(str(sample_target.id), sample_check_ok.rule_id),
             target_id=str(sample_target.id),
             rule_id=sample_check_ok.rule_id,
             severity=Status.CRITICAL,
@@ -378,9 +376,7 @@ class TestAlertStateMachine:
     ):
         """New bad result while RESOLVED -> PENDING (re-trigger)."""
         existing = AlertRecord(
-            fingerprint=make_fingerprint(
-                str(sample_target.id), sample_check_critical.rule_id
-            ),
+            fingerprint=make_fingerprint(str(sample_target.id), sample_check_critical.rule_id),
             target_id=str(sample_target.id),
             rule_id=sample_check_critical.rule_id,
             severity=Status.CRITICAL,

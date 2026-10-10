@@ -12,34 +12,33 @@ import os
 import signal
 import socket
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
+from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from apscheduler.jobstores.base import JobLookupError
 
-from app.config import settings
-from app.collector import MetricsCollector, DirectCollector
-from app.rules import RuleEngine, get_engine
 from app.alerting import process_check_result, send_alert_storm_batch
+from app.collector import DirectCollector, MetricsCollector
+from app.config import settings
+from app.db import get_db
 from app.models import (
-    Status,
-    TargetResult,
-    RunSummary,
-    TargetInDB,
     CheckResult,
+    RunSummary,
     ScrapeResult,
+    Status,
+    TargetInDB,
+    TargetResult,
 )
+from app.rules import RuleEngine, get_engine
 from app.store import (
-    get_targets,
     create_run,
     finalize_run,
+    get_targets,
     save_results,
-    upsert_target_state,
-    get_last_run,
     save_slow_queries,
+    upsert_target_state,
 )
-from app.db import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +49,7 @@ _running_task: asyncio.Task | None = None
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class SchedulerService:
@@ -108,12 +107,12 @@ class SchedulerService:
                 pass
             self._scheduler.shutdown(wait=False)
 
-        # Bekleyen tur varsa bitmesini bekle (maks 60s)
+        # Wait for an in-flight run to finish (max 60s)
         if _running_task and not _running_task.done():
             logger.info("Bekleyen turun bitmesi bekleniyor...")
             try:
                 await asyncio.wait_for(_running_task, timeout=60)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("Tur timeout oldu, force cancel")
                 _running_task.cancel()
 
@@ -148,7 +147,7 @@ class SchedulerService:
         expires_at = now.timestamp() + settings.scheduler_lock_ttl
 
         try:
-            result = await db.locks.find_one_and_update(
+            await db.locks.find_one_and_update(
                 {"name": "scheduler_leader"},
                 {
                     "$set": {
@@ -160,7 +159,7 @@ class SchedulerService:
                 },
                 upsert=True,
                 # Only take it when the lock has expired or does not exist
-                # filter ile: ya yok, ya da expires_at < now
+                # filter: either absent, or expires_at < now
             )
             # findOneAndUpdate with upsert always returns a document.
             # When the lock is held elsewhere we must check expires_at.
@@ -178,10 +177,12 @@ class SchedulerService:
         """Release the leader lock."""
         db = get_db()
         try:
-            await db.locks.delete_one({
-                "name": "scheduler_leader",
-                "instance_id": INSTANCE_ID,
-            })
+            await db.locks.delete_one(
+                {
+                    "name": "scheduler_leader",
+                    "instance_id": INSTANCE_ID,
+                }
+            )
         except Exception as e:
             logger.error("Failed to release lock: %s", e)
 
@@ -234,13 +235,9 @@ class SchedulerService:
             scrape_tasks = []
 
             if exporter_targets:
-                scrape_tasks.append(
-                    self._exporter_collector.scrape_all(exporter_targets)
-                )
+                scrape_tasks.append(self._exporter_collector.scrape_all(exporter_targets))
             if direct_targets:
-                scrape_tasks.append(
-                    self._direct_collector.scrape_all(direct_targets)
-                )
+                scrape_tasks.append(self._direct_collector.scrape_all(direct_targets))
 
             if scrape_tasks:
                 result_batches = await asyncio.gather(*scrape_tasks)
@@ -249,8 +246,8 @@ class SchedulerService:
 
             # Target → scrape result mapping (order koruyarak)
             # scrape_results order must match the target order
-            exporter_results = scrape_results[:len(exporter_targets)]
-            direct_results = scrape_results[len(exporter_targets):]
+            exporter_results = scrape_results[: len(exporter_targets)]
+            direct_results = scrape_results[len(exporter_targets) :]
 
             # Combined list
             all_targets = exporter_targets + direct_targets
@@ -381,9 +378,7 @@ class SchedulerService:
                     ts=_now(),
                     status=check.status,
                 )
-                await process_check_result(
-                    target, check, placeholder_result, session
-                )
+                await process_check_result(target, check, placeholder_result, session)
 
             # 2) Non-OK checks - group by rule and detect storms
             by_rule: dict[str, list[tuple[TargetInDB, CheckResult]]] = {}
@@ -400,18 +395,15 @@ class SchedulerService:
                 else:
                     # Normal - one alert per check
                     for target, check in items:
-                        # process_check_result target_result istiyor, ama biz
-                        # we do not actually use the TargetResult we hold here
-                        # Sadece bir placeholder gerek
+                        # process_check_result wants a TargetResult, but we do not
+                        # actually use the one we hold here - a placeholder is enough
                         placeholder_result = TargetResult(
                             run_id="alerting",
                             target_id=str(target.id),
                             ts=_now(),
                             status=check.status,
                         )
-                        await process_check_result(
-                            target, check, placeholder_result, session
-                        )
+                        await process_check_result(target, check, placeholder_result, session)
 
 
 # ── Signal handler ──────────────────────────────────────────────

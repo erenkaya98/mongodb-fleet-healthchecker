@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import pytest
 from pathlib import Path
 
-from app.rules import RuleEngine, RuleDefinition
-from app.models import Sample, CheckResult, Status, ScrapeResult
+import pytest
 
+from app.models import Sample, ScrapeResult, Status
+from app.rules import RuleEngine
 
 # -- Helpers ---------------------------------------------------
 
@@ -639,7 +639,7 @@ class TestSecurityRules:
         assert check.status == Status.WARNING
 
     def test_auth_exposed_critical(self, engine):
-        """auth=disabled VE bindIp=public → security_auth_exposed crit."""
+        """auth=disabled AND bindIp=public -> security_auth_exposed crit."""
         samples = [
             Sample(name="mongodb_security_authorization_enabled", labels={}, value=0.0),
             Sample(name="mongodb_net_bindip_public", labels={}, value=1.0),

@@ -4,8 +4,13 @@ target-version = "py311"
 exclude = ["app/static", ".venv", "venv"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "ASYNC"]
-ignore = ["E501", "B008"]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "ASYNC"]
+# E501  : line length is handled by the formatter
+# B008  : FastAPI's Depends()/Query() defaults are called in the signature by design
+# UP042 : migrating str+Enum to StrEnum changes str() output; not worth the risk here
+ignore = ["E501", "B008", "UP042"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["B011"]
+# api.py imports Jinja2Templates after a comment explaining an lru_cache workaround
+"app/api.py" = ["E402"]
+"tests/*" = ["F841", "B011", "B007"]

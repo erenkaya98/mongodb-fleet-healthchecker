@@ -1,4 +1,4 @@
-# Uygulama sabitleri ve tipleri
+# Application constants and types
 
 from __future__ import annotations
 

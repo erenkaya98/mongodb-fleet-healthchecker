@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import math
+
 import pytest
 
-from app.promparse import parse, select, select_one, sum_by, group_by, Sample
+from app.promparse import Sample, group_by, parse, select, select_one, sum_by
 
 
 class TestParseBasics:
@@ -217,7 +218,7 @@ class TestEdgeCases:
         assert samples[0].value == 1.0
 
     def test_multiple_lines_same_metric(self):
-        text = "requests_total{method=\"GET\"} 100\nrequests_total{method=\"POST\"} 50\n"
+        text = 'requests_total{method="GET"} 100\nrequests_total{method="POST"} 50\n'
         samples = parse(text)
         assert len(samples) == 2
 
@@ -242,7 +243,7 @@ class TestEdgeCases:
         assert samples[0].labels == {"le": "0.5"}
 
     def test_malformed_line_skipped(self):
-        text = "good_metric 1\nthis is not a metric\nanother{key=\"val\"} 2"
+        text = 'good_metric 1\nthis is not a metric\nanother{key="val"} 2'
         samples = parse(text)
         assert len(samples) == 2
         assert {s.name for s in samples} == {"good_metric", "another"}

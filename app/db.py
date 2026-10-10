@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
@@ -11,8 +10,8 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_client: Optional[AsyncIOMotorClient] = None
-_db: Optional[AsyncIOMotorDatabase] = None
+_client: AsyncIOMotorClient | None = None
+_db: AsyncIOMotorDatabase | None = None
 
 
 async def connect() -> AsyncIOMotorDatabase:
@@ -63,7 +62,7 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
             name="idx_targets_ip_port",
         )
     except Exception:
-        pass  # Index zaten varsa hata alabilir
+        pass  # May fail when the index already exists
 
     await db.targets.create_index("enabled", name="idx_targets_enabled")
     await db.targets.create_index("cluster", name="idx_targets_cluster")
@@ -81,13 +80,15 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
             name="idx_runs_ttl",
         )
     except Exception:
-        await db.command({
-            "collMod": "runs",
-            "index": {
-                "name": "idx_runs_ttl",
-                "expireAfterSeconds": 30 * 24 * 3600,
-            },
-        })
+        await db.command(
+            {
+                "collMod": "runs",
+                "index": {
+                    "name": "idx_runs_ttl",
+                    "expireAfterSeconds": 30 * 24 * 3600,
+                },
+            }
+        )
 
     # ── results ────────────────────────────────────────────
     await db.results.create_index(
@@ -104,13 +105,15 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
             name="idx_results_ttl",
         )
     except Exception:
-        await db.command({
-            "collMod": "results",
-            "index": {
-                "name": "idx_results_ttl",
-                "expireAfterSeconds": 14 * 24 * 3600,
-            },
-        })
+        await db.command(
+            {
+                "collMod": "results",
+                "index": {
+                    "name": "idx_results_ttl",
+                    "expireAfterSeconds": 14 * 24 * 3600,
+                },
+            }
+        )
 
     # ── target_state ───────────────────────────────────────
     await db.target_state.create_index(
@@ -139,13 +142,15 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
             partialFilterExpression={"state": "resolved"},
         )
     except Exception:
-        await db.command({
-            "collMod": "alerts",
-            "index": {
-                "name": "idx_alerts_resolved_ttl",
-                "expireAfterSeconds": 90 * 24 * 3600,
-            },
-        })
+        await db.command(
+            {
+                "collMod": "alerts",
+                "index": {
+                    "name": "idx_alerts_resolved_ttl",
+                    "expireAfterSeconds": 90 * 24 * 3600,
+                },
+            }
+        )
 
     # ── locks ──────────────────────────────────────────────
     await db.locks.create_index(
@@ -161,13 +166,15 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
             name="idx_locks_ttl",
         )
     except Exception:
-        await db.command({
-            "collMod": "locks",
-            "index": {
-                "name": "idx_locks_ttl",
-                "expireAfterSeconds": 0,
-            },
-        })
+        await db.command(
+            {
+                "collMod": "locks",
+                "index": {
+                    "name": "idx_locks_ttl",
+                    "expireAfterSeconds": 0,
+                },
+            }
+        )
 
     # ── slow_queries ─────────────────────────────────────────
     # Snapshotted slow-query details. Compound (target_id, ts) index + TTL.
@@ -186,12 +193,14 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
             name="idx_slow_queries_ttl",
         )
     except Exception:
-        await db.command({
-            "collMod": "slow_queries",
-            "index": {
-                "name": "idx_slow_queries_ttl",
-                "expireAfterSeconds": 7 * 24 * 3600,
-            },
-        })
+        await db.command(
+            {
+                "collMod": "slow_queries",
+                "index": {
+                    "name": "idx_slow_queries_ttl",
+                    "expireAfterSeconds": 7 * 24 * 3600,
+                },
+            }
+        )
 
     logger.info("All indexes ensured")

@@ -3,36 +3,34 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
-from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReturnDocument
 
 from app.db import get_db
 from app.models import (
+    AlertRecord,
+    FleetStatus,
+    RunSummary,
+    Status,
     TargetCreate,
     TargetInDB,
     TargetResult,
-    TargetUpdate,
-    RunSummary,
-    FleetStatus,
     TargetState,
-    Status,
-    AlertRecord,
-    AlertState,
+    TargetUpdate,
 )
 
 # ──────────────────────────── helpers ────────────────────────────
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _oid_filter(target_id: str) -> dict:
     """Build a filter that matches either an ObjectId or a string id."""
     from bson import ObjectId
+
     try:
         return {"_id": ObjectId(target_id)}
     except Exception:
@@ -66,7 +64,7 @@ async def get_targets(
 
 
 async def get_target(target_id: str) -> TargetInDB | None:
-    """Tek bir target getir."""
+    """Fetch a single target."""
     db = get_db()
     doc = await db.targets.find_one(_oid_filter(target_id))
     if not doc:
@@ -274,10 +272,7 @@ async def get_target_history(
 ) -> list[TargetResult]:
     """Historical results for a target."""
     db = get_db()
-    since = _now().replace(microsecond=0)  # placeholder, filtered below
-    cursor = db.results.find(
-        {"target_id": target_id}
-    ).sort("ts", -1).limit(limit)
+    cursor = db.results.find({"target_id": target_id}).sort("ts", -1).limit(limit)
     results = []
     cutoff = _now().timestamp() - (hours * 3600)
     async for doc in cursor:
@@ -308,15 +303,17 @@ async def save_slow_queries(
         # Make datetime values serializable (ts may already be a datetime)
         ts = doc.get("ts")
         if isinstance(ts, datetime) and ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        docs.append({
-            "target_id": target_id,
-            "hostname": hostname,
-            "ip": ip,
-            "cluster": cluster,
-            "captured_at": now,
-            **doc,
-        })
+            ts = ts.replace(tzinfo=UTC)
+        docs.append(
+            {
+                "target_id": target_id,
+                "hostname": hostname,
+                "ip": ip,
+                "cluster": cluster,
+                "captured_at": now,
+                **doc,
+            }
+        )
     await db.slow_queries.insert_many(docs)
     return len(docs)
 
@@ -349,28 +346,32 @@ async def get_slow_query_summary(limit: int = 20) -> list[dict]:
     db = get_db()
     pipeline = [
         {"$sort": {"millis": -1}},
-        {"$group": {
-            "_id": {"hostname": "$hostname", "ip": "$ip", "cluster": "$cluster"},
-            "count": {"$sum": 1},
-            "max_ms": {"$max": "$millis"},
-            "last_seen": {"$max": "$captured_at"},
-            "namespaces": {"$addToSet": "$ns"},
-        }},
+        {
+            "$group": {
+                "_id": {"hostname": "$hostname", "ip": "$ip", "cluster": "$cluster"},
+                "count": {"$sum": 1},
+                "max_ms": {"$max": "$millis"},
+                "last_seen": {"$max": "$captured_at"},
+                "namespaces": {"$addToSet": "$ns"},
+            }
+        },
         {"$sort": {"max_ms": -1}},
         {"$limit": limit},
     ]
     results = []
     async for doc in db.slow_queries.aggregate(pipeline):
         g = doc["_id"]
-        results.append({
-            "hostname": g.get("hostname", "?"),
-            "ip": g.get("ip", "?"),
-            "cluster": g.get("cluster", "-"),
-            "count": doc["count"],
-            "max_ms": doc["max_ms"],
-            "last_seen": doc["last_seen"],
-            "namespaces": list(doc.get("namespaces", []))[:8],
-        })
+        results.append(
+            {
+                "hostname": g.get("hostname", "?"),
+                "ip": g.get("ip", "?"),
+                "cluster": g.get("cluster", "-"),
+                "count": doc["count"],
+                "max_ms": doc["max_ms"],
+                "last_seen": doc["last_seen"],
+                "namespaces": list(doc.get("namespaces", []))[:8],
+            }
+        )
     return results
 
 
@@ -381,11 +382,24 @@ async def get_all_slow_query_docs(limit: int = 0) -> list[dict]:
     low-millisecond query doing a COLLSCAN is still worth an index suggestion.
     """
     db = get_db()
-    cursor = db.slow_queries.find({}, {
-        "ns": 1, "coll": 1, "op": 1, "millis": 1, "plan_summary": 1,
-        "docs_examined": 1, "keys_examined": 1, "nreturned": 1,
-        "filter_keys": 1, "sort": 1, "hostname": 1, "command": 1, "_id": 0,
-    }).sort("millis", -1)
+    cursor = db.slow_queries.find(
+        {},
+        {
+            "ns": 1,
+            "coll": 1,
+            "op": 1,
+            "millis": 1,
+            "plan_summary": 1,
+            "docs_examined": 1,
+            "keys_examined": 1,
+            "nreturned": 1,
+            "filter_keys": 1,
+            "sort": 1,
+            "hostname": 1,
+            "command": 1,
+            "_id": 0,
+        },
+    ).sort("millis", -1)
     if limit:
         cursor = cursor.limit(limit)
     results = []
@@ -466,7 +480,6 @@ async def get_fleet_status() -> FleetStatus:
 
     # Target counts
     enabled_count = await db.targets.count_documents({"enabled": True})
-    total_count = await db.targets.count_documents({})
 
     # Status distribution from target states
     pipeline = [
@@ -561,9 +574,7 @@ async def upsert_alert(alert: AlertRecord) -> AlertRecord:
 async def get_active_alerts() -> list[AlertRecord]:
     """Aktif (pending + firing) alert'leri getir."""
     db = get_db()
-    cursor = db.alerts.find(
-        {"state": {"$in": ["pending", "firing"]}}
-    ).sort("severity", -1)
+    cursor = db.alerts.find({"state": {"$in": ["pending", "firing"]}}).sort("severity", -1)
     results = []
     async for doc in cursor:
         results.append(AlertRecord(**doc))

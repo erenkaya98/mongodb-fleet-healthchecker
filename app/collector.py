@@ -9,10 +9,7 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
-
-from bson import json_util
+from datetime import UTC, datetime, timedelta
 
 import aiohttp
 from aiohttp import (
@@ -21,9 +18,10 @@ from aiohttp import (
     ClientTimeout,
     TCPConnector,
 )
+from bson import json_util
 
 from app.config import settings
-from app.models import ScrapeResult, Sample, TargetInDB
+from app.models import Sample, ScrapeResult, TargetInDB
 from app.promparse import parse as parse_prometheus
 
 logger = logging.getLogger(__name__)
@@ -38,8 +36,8 @@ class MetricsCollector:
     """mongodb_exporter /metrics endpoint'lerinden concurrent metrik toplar."""
 
     def __init__(self) -> None:
-        self._session: Optional[ClientSession] = None
-        self._semaphore: Optional[asyncio.Semaphore] = None
+        self._session: ClientSession | None = None
+        self._semaphore: asyncio.Semaphore | None = None
 
     async def start(self) -> None:
         """Create the ClientSession and Semaphore."""
@@ -77,8 +75,8 @@ class MetricsCollector:
             return target.exporter_url
         return f"{settings.scrape_scheme}://{target.ip}:{target.port}{settings.scrape_path}"
 
-    def _build_auth(self) -> Optional[BasicAuth]:
-        """Basic auth objesi (varsa)."""
+    def _build_auth(self) -> BasicAuth | None:
+        """Basic auth object, when configured."""
         user = settings.exporter_basic_auth_user
         pw = settings.exporter_basic_auth_password
         if user and pw:
@@ -117,8 +115,10 @@ class MetricsCollector:
                             samples = parse_prometheus(text)
                             logger.info(
                                 "Scrape OK: %s (%s) → %d samples, %.0fms",
-                                target.hostname or target.ip, url,
-                                len(samples), latency,
+                                target.hostname or target.ip,
+                                url,
+                                len(samples),
+                                latency,
                             )
                             return ScrapeResult(
                                 target_id=str(target.id),
@@ -141,7 +141,7 @@ class MetricsCollector:
                                 attempts=attempts,
                             )
 
-                except asyncio.TimeoutError as e:
+                except TimeoutError as e:
                     latency = (time.monotonic() - start) * 1000
                     total_latency += latency
                     last_error = f"Timeout: {e}"
@@ -149,7 +149,10 @@ class MetricsCollector:
                         backoff = settings.scrape_retry_backoff * (2 ** (attempt - 1))
                         logger.debug(
                             "Retry %d/%d for %s after %.1fs",
-                            attempt + 1, max_attempts, url, backoff,
+                            attempt + 1,
+                            max_attempts,
+                            url,
+                            backoff,
                         )
                         await asyncio.sleep(backoff)
 
@@ -161,7 +164,10 @@ class MetricsCollector:
                         backoff = settings.scrape_retry_backoff * (2 ** (attempt - 1))
                         logger.debug(
                             "Retry %d/%d for %s after %.1fs",
-                            attempt + 1, max_attempts, url, backoff,
+                            attempt + 1,
+                            max_attempts,
+                            url,
+                            backoff,
                         )
                         await asyncio.sleep(backoff)
 
@@ -175,8 +181,11 @@ class MetricsCollector:
         # All retries exhausted
         logger.warning(
             "Scrape FAIL: %s (%s) → %s (attempts=%d, %.0fms)",
-            target.hostname or target.ip, url,
-            last_error or "Unknown error", attempts, total_latency,
+            target.hostname or target.ip,
+            url,
+            last_error or "Unknown error",
+            attempts,
+            total_latency,
         )
         return ScrapeResult(
             target_id=str(target.id),
@@ -244,7 +253,7 @@ class DirectCollector:
         """Close every connection."""
         from motor.motor_asyncio import AsyncIOMotorClient
 
-        for target_id, client in list(self._clients.items()):
+        for _target_id, client in list(self._clients.items()):
             if isinstance(client, AsyncIOMotorClient):
                 client.close()
         self._clients.clear()
@@ -256,14 +265,10 @@ class DirectCollector:
 
         tid = str(target.id)
         if tid not in self._clients:
-            uri = target.mongo_uri or (
-                f"mongodb://{target.ip}:{target.mongo_port}"
-            )
+            uri = target.mongo_uri or (f"mongodb://{target.ip}:{target.mongo_port}")
             self._clients[tid] = AsyncIOMotorClient(
                 uri,
-                serverSelectionTimeoutMS=(
-                    settings.direct_server_selection_timeout * 1000
-                ),
+                serverSelectionTimeoutMS=(settings.direct_server_selection_timeout * 1000),
                 connectTimeoutMS=settings.direct_connect_timeout * 1000,
             )
         return self._clients[tid]
@@ -276,9 +281,7 @@ class DirectCollector:
     async def _collect_server_status(self, client: object) -> list[Sample]:
         """serverStatus → connections, asserts, cursors."""
         try:
-            doc = await client.admin.command(
-                "serverStatus", check=False
-            )
+            doc = await client.admin.command("serverStatus", check=False)
         except Exception as e:
             logger.warning("serverStatus unavailable: %s", e)
             return []
@@ -289,48 +292,62 @@ class DirectCollector:
         conn = doc.get("connections", {})
         current = conn.get("current", 0)
         available = conn.get("available", 0)
-        samples.append(self._make_sample(
-            "mongodb_ss_connections", float(current),
-            {"conn_type": "current"},
-        ))
-        samples.append(self._make_sample(
-            "mongodb_ss_connections", float(available),
-            {"conn_type": "available"},
-        ))
+        samples.append(
+            self._make_sample(
+                "mongodb_ss_connections",
+                float(current),
+                {"conn_type": "current"},
+            )
+        )
+        samples.append(
+            self._make_sample(
+                "mongodb_ss_connections",
+                float(available),
+                {"conn_type": "available"},
+            )
+        )
 
         # Assert warnings
         asserts = doc.get("asserts", {})
-        samples.append(self._make_sample(
-            "mongodb_ss_asserts_warning",
-            float(asserts.get("warning", 0)),
-        ))
+        samples.append(
+            self._make_sample(
+                "mongodb_ss_asserts_warning",
+                float(asserts.get("warning", 0)),
+            )
+        )
 
         # Timed-out cursors
         metrics = doc.get("metrics", {}).get("cursor", {})
-        samples.append(self._make_sample(
-            "mongodb_ss_timedOutCursors",
-            float(metrics.get("timedOut", 0)),
-        ))
+        samples.append(
+            self._make_sample(
+                "mongodb_ss_timedOutCursors",
+                float(metrics.get("timedOut", 0)),
+            )
+        )
 
         # MongoDB process resident memory (RSS, MB) - read-only, clusterMonitor is enough
         mem = doc.get("mem", {})
         resident_mb = mem.get("resident", 0)
         if resident_mb:
-            samples.append(self._make_sample(
-                "mongodb_mem_resident_mb",
-                float(resident_mb),
-            ))
+            samples.append(
+                self._make_sample(
+                    "mongodb_mem_resident_mb",
+                    float(resident_mb),
+                )
+            )
 
         # Operations queued on locks (globalLock.currentQueue) - a bottleneck signal
         gl = doc.get("globalLock", {})
         cur_queue = gl.get("currentQueue", {})
         queued = cur_queue.get("total", 0)
-        samples.append(self._make_sample(
-            "mongodb_globalLock_currentQueue",
-            float(queued),
-        ))
+        samples.append(
+            self._make_sample(
+                "mongodb_globalLock_currentQueue",
+                float(queued),
+            )
+        )
 
-        # WiredTiger cache metrikleri (varsa)
+        # WiredTiger cache metrics, when present
         wt = doc.get("wiredTiger", {})
         if wt:
             cache = wt.get("cache", {})
@@ -338,14 +355,18 @@ class DirectCollector:
             used_bytes = cache.get("bytes currently in the cache", 0)
             dirty_bytes = cache.get("tracked dirty bytes in the cache", 0)
             if max_bytes:
-                samples.append(self._make_sample(
-                    "mongodb_wt_cache_used_percent",
-                    round((used_bytes / max_bytes) * 100.0, 2),
-                ))
-                samples.append(self._make_sample(
-                    "mongodb_wt_cache_dirty_percent",
-                    round((dirty_bytes / max_bytes) * 100.0, 2),
-                ))
+                samples.append(
+                    self._make_sample(
+                        "mongodb_wt_cache_used_percent",
+                        round((used_bytes / max_bytes) * 100.0, 2),
+                    )
+                )
+                samples.append(
+                    self._make_sample(
+                        "mongodb_wt_cache_dirty_percent",
+                        round((dirty_bytes / max_bytes) * 100.0, 2),
+                    )
+                )
 
             # Read/write ticket availability — MongoDB 8.0 removed concurrentTransactions;
             # emit samples only when the structure exists, else the rule stays UNKNOWN
@@ -354,43 +375,55 @@ class DirectCollector:
             read_txn = ct.get("read")
             write_txn = ct.get("write")
             if isinstance(read_txn, dict) and "available" in read_txn:
-                samples.append(self._make_sample(
-                    "mongodb_wt_read_tickets_available", float(read_txn["available"]),
-                ))
+                samples.append(
+                    self._make_sample(
+                        "mongodb_wt_read_tickets_available",
+                        float(read_txn["available"]),
+                    )
+                )
             if isinstance(write_txn, dict) and "available" in write_txn:
-                samples.append(self._make_sample(
-                    "mongodb_wt_write_tickets_available", float(write_txn["available"]),
-                ))
+                samples.append(
+                    self._make_sample(
+                        "mongodb_wt_write_tickets_available",
+                        float(write_txn["available"]),
+                    )
+                )
 
             # Checkpoint duration
             txn = wt.get("transaction", {})
             ckpt_min = txn.get("transaction checkpoint min time (msecs)", 0)
             ckpt_max = txn.get("transaction checkpoint max time (msecs)", 0)
             if ckpt_max:
-                samples.append(self._make_sample(
-                    "mongodb_wt_checkpoint_max_ms", float(ckpt_max),
-                ))
-                samples.append(self._make_sample(
-                    "mongodb_wt_checkpoint_min_ms", float(ckpt_min),
-                ))
+                samples.append(
+                    self._make_sample(
+                        "mongodb_wt_checkpoint_max_ms",
+                        float(ckpt_max),
+                    )
+                )
+                samples.append(
+                    self._make_sample(
+                        "mongodb_wt_checkpoint_min_ms",
+                        float(ckpt_min),
+                    )
+                )
 
             # Eviction pressure: read into cache vs evicted
             bytes_read = cache.get("bytes read into cache", 0)
             bytes_evicted = cache.get("bytes written from cache", 0)
             if bytes_read:
-                samples.append(self._make_sample(
-                    "mongodb_wt_eviction_ratio",
-                    round(bytes_evicted / bytes_read, 4),
-                ))
+                samples.append(
+                    self._make_sample(
+                        "mongodb_wt_eviction_ratio",
+                        round(bytes_evicted / bytes_read, 4),
+                    )
+                )
 
         return samples
 
     async def _collect_replset_status(self, client: object) -> list[Sample]:
         """replSetGetStatus → replset metrikleri."""
         try:
-            doc = await client.admin.command(
-                "replSetGetStatus", check=False
-            )
+            doc = await client.admin.command("replSetGetStatus", check=False)
         except Exception as e:
             logger.debug("replSetGetStatus unavailable (standalone?): %s", e)
             return []
@@ -402,35 +435,44 @@ class DirectCollector:
 
         # My state
         my_state = doc.get("myState", 0)
-        samples.append(self._make_sample(
-            "mongodb_mongod_replset_my_state", float(my_state),
-        ))
+        samples.append(
+            self._make_sample(
+                "mongodb_mongod_replset_my_state",
+                float(my_state),
+            )
+        )
 
         # Number of members
         members = doc.get("members", [])
-        samples.append(self._make_sample(
-            "mongodb_mongod_replset_number_of_members",
-            float(len(members)),
-        ))
+        samples.append(
+            self._make_sample(
+                "mongodb_mongod_replset_number_of_members",
+                float(len(members)),
+            )
+        )
 
         # Per-member health + lag
         for member in members:
             member_name = member.get("name", "unknown")
             labels = {"member": member_name}
-            samples.append(self._make_sample(
-                "mongodb_mongod_replset_member_health",
-                float(member.get("health", 0)),
-                labels,
-            ))
+            samples.append(
+                self._make_sample(
+                    "mongodb_mongod_replset_member_health",
+                    float(member.get("health", 0)),
+                    labels,
+                )
+            )
             # replication lag: secondary'larda olur
             lag = member.get("secondaryDelaySecs", 0)
             if lag is None:
                 lag = 0
-            samples.append(self._make_sample(
-                "mongodb_mongod_replset_member_replication_lag",
-                float(lag),
-                labels,
-            ))
+            samples.append(
+                self._make_sample(
+                    "mongodb_mongod_replset_member_replication_lag",
+                    float(lag),
+                    labels,
+                )
+            )
 
         return samples
 
@@ -456,27 +498,35 @@ class DirectCollector:
         if head_doc and "ts" in head_doc:
             head_ts = head_doc["ts"]
             if hasattr(head_ts, "time"):
-                samples.append(self._make_sample(
-                    "mongodb_mongod_replset_oplog_head_timestamp",
-                    float(head_ts.time),
-                ))
+                samples.append(
+                    self._make_sample(
+                        "mongodb_mongod_replset_oplog_head_timestamp",
+                        float(head_ts.time),
+                    )
+                )
             else:
-                samples.append(self._make_sample(
-                    "mongodb_mongod_replset_oplog_head_timestamp",
-                    float(head_ts.timestamp()),
-                ))
+                samples.append(
+                    self._make_sample(
+                        "mongodb_mongod_replset_oplog_head_timestamp",
+                        float(head_ts.timestamp()),
+                    )
+                )
         if tail_doc and "ts" in tail_doc:
             tail_ts = tail_doc["ts"]
             if hasattr(tail_ts, "time"):
-                samples.append(self._make_sample(
-                    "mongodb_mongod_replset_oplog_tail_timestamp",
-                    float(tail_ts.time),
-                ))
+                samples.append(
+                    self._make_sample(
+                        "mongodb_mongod_replset_oplog_tail_timestamp",
+                        float(tail_ts.time),
+                    )
+                )
             else:
-                samples.append(self._make_sample(
-                    "mongodb_mongod_replset_oplog_tail_timestamp",
-                    float(tail_ts.timestamp()),
-                ))
+                samples.append(
+                    self._make_sample(
+                        "mongodb_mongod_replset_oplog_tail_timestamp",
+                        float(tail_ts.timestamp()),
+                    )
+                )
 
         return samples
 
@@ -493,15 +543,24 @@ class DirectCollector:
         fs_used = ds.get("fsUsedSize", 0)
         if fs_total and fs_used:
             used_percent = (fs_used / fs_total) * 100.0
-            samples.append(self._make_sample(
-                "mongodb_fs_used_percent", round(used_percent, 2),
-            ))
-            samples.append(self._make_sample(
-                "mongodb_fs_total_gb", round(fs_total / (1024**3), 2),
-            ))
-            samples.append(self._make_sample(
-                "mongodb_fs_used_gb", round(fs_used / (1024**3), 2),
-            ))
+            samples.append(
+                self._make_sample(
+                    "mongodb_fs_used_percent",
+                    round(used_percent, 2),
+                )
+            )
+            samples.append(
+                self._make_sample(
+                    "mongodb_fs_total_gb",
+                    round(fs_total / (1024**3), 2),
+                )
+            )
+            samples.append(
+                self._make_sample(
+                    "mongodb_fs_used_gb",
+                    round(fs_used / (1024**3), 2),
+                )
+            )
         return samples
 
     async def _collect_host_info(self, client: object) -> list[Sample]:
@@ -516,14 +575,20 @@ class DirectCollector:
         system = hi.get("system", {})
         mem_size_mb = system.get("memSizeMB", 0)
         if mem_size_mb:
-            samples.append(self._make_sample(
-                "mongodb_mem_total_mb", float(mem_size_mb),
-            ))
+            samples.append(
+                self._make_sample(
+                    "mongodb_mem_total_mb",
+                    float(mem_size_mb),
+                )
+            )
         num_cores = system.get("numCores", 0)
         if num_cores:
-            samples.append(self._make_sample(
-                "mongodb_cpu_cores", float(num_cores),
-            ))
+            samples.append(
+                self._make_sample(
+                    "mongodb_cpu_cores",
+                    float(num_cores),
+                )
+            )
         return samples
 
     async def _collect_build_info(self, client: object) -> list[Sample]:
@@ -541,9 +606,12 @@ class DirectCollector:
             try:
                 parts = version_str.split(".")
                 major_minor = float(f"{parts[0]}.{parts[1]}")
-                samples.append(self._make_sample(
-                    "mongodb_mongod_version", major_minor,
-                ))
+                samples.append(
+                    self._make_sample(
+                        "mongodb_mongod_version",
+                        major_minor,
+                    )
+                )
             except (ValueError, IndexError):
                 logger.debug("Versiyon parse edilemedi: %s", version_str)
         return samples
@@ -566,9 +634,12 @@ class DirectCollector:
             try:
                 parts = version_str.split(".")
                 major_minor = float(f"{parts[0]}.{parts[1]}")
-                samples.append(self._make_sample(
-                    "mongodb_fcv_version", major_minor,
-                ))
+                samples.append(
+                    self._make_sample(
+                        "mongodb_fcv_version",
+                        major_minor,
+                    )
+                )
             except (ValueError, IndexError):
                 logger.debug("FCV parse edilemedi: %s", version_str)
         return samples
@@ -587,35 +658,40 @@ class DirectCollector:
         # authorization: enabled/disabled
         security = parsed.get("security", {})
         auth = security.get("authorization", "disabled")
-        samples.append(self._make_sample(
-            "mongodb_security_authorization_enabled",
-            1.0 if auth == "enabled" else 0.0,
-        ))
+        samples.append(
+            self._make_sample(
+                "mongodb_security_authorization_enabled",
+                1.0 if auth == "enabled" else 0.0,
+            )
+        )
 
         # bindIp - may be a comma-separated list
         net = parsed.get("net", {})
         bind_ip = str(net.get("bindIp", ""))
-        samples.append(self._make_sample(
-            "mongodb_net_bindip_count",
-            float(len([ip for ip in bind_ip.split(",") if ip.strip()])),
-        ))
-        # Public bindIp: 0.0.0.0 or :: (all interfaces)
-        is_public = any(
-            ip.strip() in ("0.0.0.0", "::", "*")
-            for ip in bind_ip.split(",")
+        samples.append(
+            self._make_sample(
+                "mongodb_net_bindip_count",
+                float(len([ip for ip in bind_ip.split(",") if ip.strip()])),
+            )
         )
-        samples.append(self._make_sample(
-            "mongodb_net_bindip_public",
-            1.0 if is_public else 0.0,
-        ))
+        # Public bindIp: 0.0.0.0 or :: (all interfaces)
+        is_public = any(ip.strip() in ("0.0.0.0", "::", "*") for ip in bind_ip.split(","))
+        samples.append(
+            self._make_sample(
+                "mongodb_net_bindip_public",
+                1.0 if is_public else 0.0,
+            )
+        )
 
         # TLS durumu
         tls = parsed.get("net", {}).get("tls", {})
         tls_mode = tls.get("mode", "disabled")
-        samples.append(self._make_sample(
-            "mongodb_net_tls_enabled",
-            1.0 if tls_mode != "disabled" else 0.0,
-        ))
+        samples.append(
+            self._make_sample(
+                "mongodb_net_tls_enabled",
+                1.0 if tls_mode != "disabled" else 0.0,
+            )
+        )
 
         return samples
 
@@ -646,7 +722,7 @@ class DirectCollector:
         if not list_dbs or list_dbs.get("ok") != 1:
             return [], []
 
-        cutoff = datetime.now(timezone.utc) - timedelta(seconds=window)
+        cutoff = datetime.now(UTC) - timedelta(seconds=window)
 
         total = 0
         max_ms = 0.0
@@ -678,24 +754,31 @@ class DirectCollector:
                 for ns, cnt in ns_counts.items():
                     per_ns.append((db_name, ns, cnt))
             except Exception as e:
-                logger.debug(
-                    "could not read system.profile (%s): %s", db_name, e
-                )
+                logger.debug("could not read system.profile (%s): %s", db_name, e)
                 continue
 
         samples: list[Sample] = []
         # Scalar metrics are always emitted -> rules produce a clean OK/warning.
-        samples.append(self._make_sample(
-            "mongodb_slow_query_total", float(total),
-        ))
-        samples.append(self._make_sample(
-            "mongodb_slow_query_max_ms", float(max_ms),
-        ))
+        samples.append(
+            self._make_sample(
+                "mongodb_slow_query_total",
+                float(total),
+            )
+        )
+        samples.append(
+            self._make_sample(
+                "mongodb_slow_query_max_ms",
+                float(max_ms),
+            )
+        )
         for db_name, ns, cnt in per_ns:
-            samples.append(self._make_sample(
-                "mongodb_slow_query_count", float(cnt),
-                {"db": db_name, "ns": ns},
-            ))
+            samples.append(
+                self._make_sample(
+                    "mongodb_slow_query_count",
+                    float(cnt),
+                    {"db": db_name, "ns": ns},
+                )
+            )
         return samples, details
 
     def _extract_slow_query_detail(self, db_name: str, doc: dict) -> dict:
@@ -734,7 +817,7 @@ class DirectCollector:
                 filter_keys.append(distinct_key)
             srt = cmd.get("sort", {})
             if isinstance(srt, dict):
-                sort_keys = {k: v for k, v in srt.items()}
+                sort_keys = dict(srt)
             # aggregate pipeline: stage names + $match fields
             pipe = cmd.get("pipeline", [])
             if isinstance(pipe, list):
@@ -848,8 +931,7 @@ class DirectCollector:
             try:
                 client = self._get_client(target)
 
-                # Ping testi
-                ping_start = time.monotonic()
+                # Ping test
                 try:
                     await client.admin.command("ping")
                     ping_ok = True
@@ -858,7 +940,9 @@ class DirectCollector:
                     latency = (time.monotonic() - start) * 1000
                     logger.warning(
                         "Direct FAIL (ping): %s → %s (%.0fms)",
-                        label, e, latency,
+                        label,
+                        e,
+                        latency,
                     )
                     return ScrapeResult(
                         target_id=str(target.id),
@@ -943,7 +1027,9 @@ class DirectCollector:
                 latency = (time.monotonic() - start) * 1000
                 logger.info(
                     "Direct OK: %s → %d samples, %.0fms",
-                    label, len(all_samples), latency,
+                    label,
+                    len(all_samples),
+                    latency,
                 )
                 return ScrapeResult(
                     target_id=str(target.id),

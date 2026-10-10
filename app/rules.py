@@ -14,7 +14,7 @@ from typing import Any
 import yaml
 
 from app.config import settings
-from app.models import Sample, CheckResult, Status, ScrapeResult
+from app.models import CheckResult, ScrapeResult, Status
 
 logger = logging.getLogger(__name__)
 
@@ -108,14 +108,10 @@ class RuleEngine:
                 continue
             # skip_when_absent: do not evaluate the rule when the metric was never collected
             # (e.g. WiredTiger ticket metrics are gone in MongoDB 8.0 - skip, do not report UNKNOWN)
-            if rule.skip_when_absent and not any(
-                m in present_metrics for m in rule.metrics
-            ):
+            if rule.skip_when_absent and not any(m in present_metrics for m in rule.metrics):
                 continue
             try:
-                result = self._evaluate_rule(
-                    rule, scrape_result, previous_metrics, target_role
-                )
+                result = self._evaluate_rule(rule, scrape_result, previous_metrics, target_role)
             except Exception as exc:
                 logger.error("Rule evaluation failed: %s -> %s", rule.rule_id, exc)
                 result = CheckResult(
@@ -129,7 +125,10 @@ class RuleEngine:
         return results
 
     def _resolve_metric(
-        self, rule: RuleDefinition, scrape_result: ScrapeResult
+        self,
+        rule: RuleDefinition,
+        scrape_result: ScrapeResult,
+        previous_metrics: dict[str, float] | None = None,
     ) -> float | None:
         """Return the first metric name found among the alternatives."""
         # Synthetic metrics: scrape_ok, scrape_latency_ms
@@ -139,14 +138,10 @@ class RuleEngine:
             return scrape_result.latency_ms
 
         for metric_name in rule.metrics:
-            matching = [
-                s for s in scrape_result.samples if s.name == metric_name
-            ]
-            # Label filtresi uygula
+            matching = [s for s in scrape_result.samples if s.name == metric_name]
+            # Apply the label filter
             for label_key, label_val in rule.labels.items():
-                matching = [
-                    s for s in matching if s.labels.get(label_key) == label_val
-                ]
+                matching = [s for s in matching if s.labels.get(label_key) == label_val]
             if matching:
                 match rule.aggregation:
                     case "value":
@@ -160,11 +155,9 @@ class RuleEngine:
                     case "count":
                         return float(len(matching))
                     case "absent":
-                        return 0.0  # varsa hata, yoksa absent
+                        return 0.0  # present = problem, missing = absent
                     case "ratio":
-                        return self._compute_ratio(
-                            scrape_result, rule, metric_name
-                        )
+                        return self._compute_ratio(scrape_result, rule, metric_name)
                     case "delta":
                         if previous_metrics and rule.rule_id in previous_metrics:
                             prev = previous_metrics[rule.rule_id]
@@ -294,7 +287,7 @@ class RuleEngine:
         if auth is None and bindip is None:
             return None
 
-        # auth=0 (disabled) VE bindip=1 (public) → exposed
+        # auth=0 (disabled) AND bindip=1 (public) -> exposed
         if auth == 0.0 and bindip == 1.0:
             return 1.0
         return 0.0
@@ -352,7 +345,7 @@ class RuleEngine:
                     message=role_check.message,
                 )
 
-        value = self._resolve_metric(rule, scrape_result)
+        value = self._resolve_metric(rule, scrape_result, previous_metrics)
 
         # Metric not found -> UNKNOWN
         if value is None or math.isnan(value):
@@ -387,7 +380,7 @@ class RuleEngine:
                 message=self._format_message(rule, value, Status.CRITICAL),
             )
 
-        # Sonra WARNING threshold'u
+        # Then the WARNING threshold
         is_warning = self._check_threshold(rule, value, Status.WARNING)
         if is_warning:
             return CheckResult(

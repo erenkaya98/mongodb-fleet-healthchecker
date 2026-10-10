@@ -8,12 +8,13 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from typing import NamedTuple
 
 
 class Sample(NamedTuple):
     """A single Prometheus metric sample."""
+
     name: str
     labels: dict[str, str]
     value: float
@@ -32,7 +33,7 @@ _UNESCAPE_MAP = {"\\\\": "\\", '\\"': '"', "\\n": "\n"}
 
 def _unescape_label(val: str) -> str:
     """Unescape Prometheus escape sequences inside a label value."""
-    # Bu regex backslash + karakter yakalar
+    # This regex captures a backslash plus the character that follows it
     return _UNESCAPE_RE.sub(lambda m: _UNESCAPE_MAP.get(m.group(0), m.group(0)), val)
 
 
@@ -40,10 +41,10 @@ def _unescape_label(val: str) -> str:
 # Format: metric_name{label="value",...} value [timestamp]
 # Groups: 1=name, 2=full label block (optional), 3=value, 4=timestamp (optional)
 _METRIC_RE = re.compile(
-    r'^([a-zA-Z_:][a-zA-Z0-9_:]*)\s*'    # metric name
-    r'(?:\{([^}]*)\})?\s*'               # optional {labels}
-    r'(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|NaN|\+?Inf|-Inf)\s*'  # value
-    r'(\d+)?\s*$'                         # optional timestamp
+    r"^([a-zA-Z_:][a-zA-Z0-9_:]*)\s*"  # metric name
+    r"(?:\{([^}]*)\})?\s*"  # optional {labels}
+    r"(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|NaN|\+?Inf|-Inf)\s*"  # value
+    r"(\d+)?\s*$"  # optional timestamp
 )
 
 # Label parsing inside braces: key="value" pairs separated by comma
