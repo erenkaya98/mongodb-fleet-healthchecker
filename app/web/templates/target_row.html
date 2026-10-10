@@ -1,0 +1,41 @@
+{# target_row.html — Tek target satırı #}
+<tr id="target-row-{{ t.id }}"
+    data-search="{{ t.hostname or '' }} {{ t.ip }}"
+    data-cluster="{{ t.cluster or '' }}"
+    data-role="{{ t.role or '' }}"
+    data-env="{{ t.env or '' }}"
+    data-enabled="{{ 'true' if t.enabled else 'false' }}"
+    data-ip="{{ t.ip }}"
+    data-hostname="{{ t.hostname or t.ip }}"
+    data-port="{{ t.port }}">
+  <td class="mono text-sm">{{ t.ip }}</td>
+  <td>{{ t.hostname or '-' }}</td>
+  <td><span class="badge badge-neutral">{{ t.cluster or '-' }}</span></td>
+  <td>{{ t.role or 'default' }}</td>
+  <td><span class="text-sm">{{ t.env or '-' }}</span></td>
+  <td class="mono text-sm">{{ t.port }}</td>
+  <td>
+    <label class="toggle">
+      <input type="checkbox" {{ 'checked' if t.enabled else '' }}
+             data-target-toggle="{{ t.id }}"
+             aria-label="Toggle target {{ t.hostname or t.ip }}">
+      <span class="slider"></span>
+    </label>
+  </td>
+  <td>
+    <div class="flex gap-1 items-center">
+      <button class="btn-icon" data-open-modal="/targets/{{ t.id }}/edit-form"
+              aria-label="Düzenle {{ t.hostname or t.ip }}" title="Düzenle">
+        <svg><use href="#i-edit"/></svg>
+      </button>
+      <button class="btn-icon btn-icon-danger" data-delete-target="{{ t.id }}"
+              data-delete-name="{{ t.hostname or t.ip }}"
+              aria-label="Sil {{ t.hostname or t.ip }}" title="Sil">
+        <svg><use href="#i-trash"/></svg>
+      </button>
+      <a href="/targets/{{ t.id }}" class="btn-icon" aria-label="Metrikleri görüntüle {{ t.hostname or t.ip }}" title="Metrikler">
+        <svg><use href="#i-activity"/></svg>
+      </a>
+    </div>
+  </td>
+</tr>

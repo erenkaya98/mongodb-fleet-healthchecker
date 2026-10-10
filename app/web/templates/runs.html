@@ -1,0 +1,86 @@
+{# runs.html — Run History sayfası #}
+{% extends "base.html" %}
+{% block title %}Runs — MongoHealth{% endblock %}
+{% block content %}
+
+<div class="page">
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">Çalışma Geçmişi</h1>
+      <p class="page-subtitle">{{ runs|length }} son çalışma</p>
+    </div>
+  </div>
+
+  <div class="card">
+    {% if runs %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Run ID</th>
+            <th scope="col">Başlangıç</th>
+            <th scope="col">Süre</th>
+            <th scope="col">Targets</th>
+            <th scope="col">Durum</th>
+            <th scope="col">Tetikleyici</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in runs %}
+          <tr class="row-clickable" onclick="window.location='/runs/{{ r.run_id }}'">
+            <td>
+              <button class="copy-btn" onclick="event.stopPropagation();window.copyText('{{ r.run_id }}', this)"
+                      aria-label="Copy run ID" title="Copy run ID">
+                <span class="mono">{{ r.run_id[:12] }}</span>
+                <svg><use href="#i-copy"/></svg>
+              </button>
+            </td>
+            <td class="text-sm" data-tooltip="{{ r.started_at|localtime if r.started_at else '' }}">
+              <span class="mono">{{ r.started_at|localtime('%Y-%m-%d %H:%M') if r.started_at else '-' }}</span>
+            </td>
+            <td>
+              {% set dur_s = (r.duration_ms / 1000) %}
+              <span class="mono text-sm {{ 'text-muted' if dur_s < 5 else ('text-secondary' if dur_s < 15 else '') }}"
+                    style="{{ 'color:var(--warn);font-weight:600;' if dur_s >= 15 else '' }}">
+                {{ '%.0f' % r.duration_ms }}ms
+              </span>
+            </td>
+            <td class="mono text-sm">{{ r.target_count }}</td>
+            <td>
+              <div class="flex gap-2 items-center">
+                {% set total = r.ok + r.warning + r.critical + r.unknown %}
+                {% set total = total if total > 0 else 1 %}
+                <div class="stacked-bar" data-tooltip="{{ r.ok }} OK · {{ r.warning }} warn · {{ r.critical }} crit · {{ r.unknown }} unk">
+                  {% if r.ok > 0 %}<div class="seg-ok" style="flex:{{ r.ok }};"></div>{% endif %}
+                  {% if r.warning > 0 %}<div class="seg-warning" style="flex:{{ r.warning }};"></div>{% endif %}
+                  {% if r.critical > 0 %}<div class="seg-critical" style="flex:{{ r.critical }};"></div>{% endif %}
+                  {% if r.unknown > 0 %}<div class="seg-unknown" style="flex:{{ r.unknown }};"></div>{% endif %}
+                </div>
+                <span class="text-xs mono text-muted">
+                  {{ r.ok }}/{{ r.warning }}/{{ r.critical }}/{{ r.unknown }}
+                </span>
+              </div>
+            </td>
+            <td>
+              {% if r.triggered_by == 'manual' %}
+              <span class="badge badge-neutral"><svg style="width:11px;height:11px;"><use href="#i-zap"/></svg> manuel</span>
+              {% else %}
+              <span class="badge badge-neutral"><svg style="width:11px;height:11px;"><use href="#i-clock"/></svg> planlı</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <div class="empty-icon"><svg><use href="#i-history"/></svg></div>
+      <h3>Henüz çalışma yok</h3>
+      <p>Çalışmalar, zamanlayıcı ilk döngüsünü çalıştırdıktan sonra görünecek.</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

@@ -1,0 +1,30 @@
+# Secrets and credential-bearing files
+.env
+.env.*
+!.env.example
+*.csv
+*.pem
+*.key
+
+# Tests and dev artifacts (kept out of the production image)
+tests/
+pytest.ini
+.pre-commit-config.yaml
+venv/
+.venv/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# VCS, CI, editor, macOS
+.git/
+.gitignore
+.github/
+.cicd/
+.idea/
+.vscode/
+.DS_Store
+._*

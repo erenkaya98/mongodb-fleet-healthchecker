@@ -1,0 +1,202 @@
+{# dashboard_partial.html — Dashboard içeriği (JS polling ile yenilenir) #}
+{# i18n: tüm metinler bu sözlükte toplu #}
+{% set STR = {
+  'title': 'Filo durumu',
+  'total': 'Toplam',
+  'ok': 'OK',
+  'warning': 'Uyarı',
+  'critical': 'Kritik',
+  'unknown': 'Bilinmiyor',
+  'clusters': 'Cluster\'lar',
+  'targets': 'Sunucular',
+  'view_all': 'Tümü',
+  'no_targets': 'Sunucu tanımlı değil',
+  'host': 'Host',
+  'cluster': 'Cluster',
+  'role': 'Rol',
+  'env': 'Env',
+  'status': 'Durum'
+} %}
+
+<div id="dashboard-content" class="page">
+
+  {# ── Page header ── #}
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">{{ STR.title }}</h1>
+      <p class="page-subtitle" id="last-run-line"
+         data-last-run="{{ fleet.last_run_at.strftime('%Y-%m-%dT%H:%M:%SZ') if fleet.last_run_at else '' }}"
+         data-duration="{{ fleet.last_duration_ms }}">
+        {# JS doldurur (relative zaman + duration + bayat uyarısı) #}
+      </p>
+    </div>
+    <div class="page-actions refresh-controls">
+      <div style="display:flex;flex-direction:column;gap:5px;align-items:stretch;">
+        <div class="seg" role="group" aria-label="Otomatik yenileme aralığı">
+          <button class="seg-btn" data-interval="15s" type="button">15s</button>
+          <button class="seg-btn" data-interval="30s" type="button">30s</button>
+          <button class="seg-btn" data-interval="1m" type="button">1m</button>
+          <button class="seg-btn" data-interval="off" type="button">Kapalı</button>
+        </div>
+        <div class="countdown" aria-hidden="true">
+          <div class="countdown-track"><div class="countdown-fill" id="dash-countdown-fill"></div></div>
+          <span class="countdown-text" id="dash-countdown-text">—</span>
+        </div>
+      </div>
+      <button class="btn btn-sm btn-primary" id="dash-run-now" type="button">
+        <svg><use href="#i-zap"/></svg> Çalıştır
+      </button>
+    </div>
+  </div>
+
+  {# ── Summary cards (drill-down: statüye filtreli dashboard) ── #}
+  <div class="summary-row" role="group" aria-label="Filo durum özeti">
+    <a class="summary-card total" href="/" data-filter="all">
+      <span class="accent-bar"></span>
+      <div class="count">{{ fleet.total }}</div>
+      <div class="label">{{ STR.total }}</div>
+    </a>
+    <a class="summary-card ok" href="/?status=ok" data-filter="ok">
+      <span class="accent-bar"></span>
+      <div class="count">{{ fleet.ok }}</div>
+      <div class="label">{{ STR.ok }}</div>
+    </a>
+    <a class="summary-card warning" href="/?status=warning" data-filter="warning">
+      <span class="accent-bar"></span>
+      <div class="count">{{ fleet.warning }}</div>
+      <div class="label">{{ STR.warning }}</div>
+    </a>
+    <a class="summary-card critical" href="/?status=critical" data-filter="critical">
+      <span class="accent-bar"></span>
+      <div class="count">{{ fleet.critical }}</div>
+      <div class="label">{{ STR.critical }}</div>
+    </a>
+    <a class="summary-card unknown" href="/?status=unknown" data-filter="unknown">
+      <span class="accent-bar"></span>
+      <div class="count">{{ fleet.unknown }}</div>
+      <div class="label">{{ STR.unknown }}</div>
+    </a>
+  </div>
+
+  {# ── Cluster grid ── #}
+  <div class="section-grid">
+    {% if fleet.clusters %}
+    <section>
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px;">
+        <h2 class="section-label">{{ STR.clusters }}</h2>
+        <span class="section-meta">worst-first</span>
+      </div>
+      <div class="cluster-grid">
+        {# Deterministik sıralama: critical → warning → ok, ikincil olarak ad (alfabetik) #}
+        {% set crit_clusters = [] %}
+        {% set warn_clusters = [] %}
+        {% set ok_clusters = [] %}
+        {% for name, stats in fleet.clusters.items() %}
+          {% if stats.get('critical', 0) > 0 %}
+            {% set _ = crit_clusters.append((name, stats)) %}
+          {% elif stats.get('warning', 0) > 0 %}
+            {% set _ = warn_clusters.append((name, stats)) %}
+          {% else %}
+            {% set _ = ok_clusters.append((name, stats)) %}
+          {% endif %}
+        {% endfor %}
+        {% set crit_clusters = crit_clusters|sort(attribute='0') %}
+        {% set warn_clusters = warn_clusters|sort(attribute='0') %}
+        {% set ok_clusters = ok_clusters|sort(attribute='0') %}
+        {% for name, stats in crit_clusters + warn_clusters + ok_clusters %}
+        {% set health = 'critical' if stats.get('critical', 0) > 0 else ('warning' if stats.get('warning', 0) > 0 else 'ok') %}
+        {% set total_hosts = stats.get('ok', 0) + stats.get('warning', 0) + stats.get('critical', 0) + stats.get('unknown', 0) %}
+        {# Sorunlu host listesi (tooltip için) — eldeki veriden türet #}
+        {% set bad_hosts = [] %}
+        {% for t in targets %}
+          {% if (t.cluster or '') == name %}
+            {% set tst = fleet.target_statuses.get(t.id|string, 'unknown') %}
+            {% if tst != 'ok' %}
+              {% set _ = bad_hosts.append((t.hostname or t.ip) ~ '|' ~ tst) %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        <a class="cluster-card" href="/targets?cluster={{ name|urlencode }}"
+           data-health="{{ health }}"
+           data-cluster-name="{{ name }}"
+           data-tooltip-hosts="{{ bad_hosts|join(',') }}">
+          <div class="cluster-head">
+            <span class="cluster-name">{{ name }}</span>
+            <span class="cluster-total">{{ total_hosts }} host</span>
+          </div>
+          <div class="cluster-stats">
+            {% if stats.get('ok', 0) > 0 %}
+            <span class="stat"><span class="dot dot-ok"></span><span class="num-ok">{{ stats.get('ok', 0) }}</span><span class="stat-label">OK</span></span>
+            {% endif %}
+            {% if stats.get('warning', 0) > 0 %}
+            <span class="stat"><span class="dot dot-warning"></span><span class="num-warning">{{ stats.get('warning', 0) }}</span><span class="stat-label">Uyarı</span></span>
+            {% endif %}
+            {% if stats.get('critical', 0) > 0 %}
+            <span class="stat"><span class="dot dot-critical"></span><span class="num-critical">{{ stats.get('critical', 0) }}</span><span class="stat-label">Kritik</span></span>
+            {% endif %}
+            {% if stats.get('unknown', 0) > 0 %}
+            <span class="stat"><span class="dot dot-unknown"></span><span class="num-unknown">{{ stats.get('unknown', 0) }}</span><span class="stat-label">Bilinmiyor</span></span>
+            {% endif %}
+          </div>
+          {% if bad_hosts %}
+          <div class="cluster-hosts">{{ bad_hosts|join(', ') }}</div>
+          {% endif %}
+        </a>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+  </div>
+
+  {# ── Targets table ── #}
+  {% if targets %}
+  <div class="card mt-4">
+    <div class="card-header">
+      <h2>{{ STR.targets }}</h2>
+      <a href="/targets" class="btn btn-sm btn-ghost">{{ STR.view_all }} <svg><use href="#i-chevron-right"/></svg></a>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">{{ STR.host }}</th>
+            <th scope="col">{{ STR.cluster }}</th>
+            <th scope="col">{{ STR.role }}</th>
+            <th scope="col">{{ STR.env }}</th>
+            <th scope="col">{{ STR.status }}</th>
+          </tr>
+        </thead>
+        <tbody id="dash-targets-tbody">
+          {% for t in targets %}
+          {% set st = fleet.target_statuses.get(t.id|string, 'unknown') %}
+          <tr class="row-clickable dash-target-row" data-status="{{ st }}" onclick="window.location='/targets/{{ t.id }}'">
+            <td>
+              <a href="/targets/{{ t.id }}" class="mono" style="color:var(--text-primary);text-decoration:none;">
+                {{ t.hostname or t.ip }}
+              </a>
+              <span class="text-xs text-muted mono" style="margin-left:6px;">:{{ t.mongo_port }}</span>
+            </td>
+            <td><span class="badge badge-neutral">{{ t.cluster or '-' }}</span></td>
+            <td>{{ t.role or 'default' }}</td>
+            <td><span class="text-sm">{{ t.env or '-' }}</span></td>
+            <td>
+              <span class="status-indicator status-{{ st }}">
+                {% if st == 'ok' %}<svg><use href="#i-check"/></svg>{% elif st == 'critical' %}<svg><use href="#i-alert"/></svg>{% else %}<svg><use href="#i-info"/></svg>{% endif %}
+                <span class="dot dot-{{ st }}"></span> {{ st|upper }}
+              </span>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="empty-state mt-4">
+    <div class="empty-icon"><svg><use href="#i-server"/></svg></div>
+    <h3>{{ STR.no_targets }}</h3>
+    <p>Sunucu eklemek için <a href="/targets">Targets</a> sayfasını kullanın.</p>
+  </div>
+  {% endif %}
+
+</div>

@@ -1,0 +1,146 @@
+{# target_form.html — Add/Edit form (modal içinde) #}
+<div class="modal-header">
+  <h3>{% if action == 'add' %}Sunucu Ekle{% else %}Sunucuyu Düzenle{% endif %}</h3>
+  <button class="btn-icon" onclick="closeModal()" aria-label="Kapat"><svg><use href="#i-x"/></svg></button>
+</div>
+
+<form id="target-form" data-form-type="{{ action }}" data-target-id="{{ target.id if target else '' }}">
+  <div class="modal-body">
+    <div class="form-group">
+      <label for="f-ip">IP Adresi *</label>
+      <input type="text" id="f-ip" name="ip" required placeholder="10.0.0.1"
+             value="{{ target.ip if target else '' }}">
+      <span class="field-error" id="err-ip"></span>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="f-port">Exporter Port</label>
+        <input type="number" id="f-port" name="port" value="{{ target.port if target else 9216 }}">
+      </div>
+      <div class="form-group">
+        <label for="f-mongo-port">Mongo Port</label>
+        <input type="number" id="f-mongo-port" name="mongo_port" value="{{ target.mongo_port if target else 27017 }}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="f-hostname">Hostname</label>
+      <input type="text" id="f-hostname" name="hostname" placeholder="db-prod-01"
+             value="{{ target.hostname or '' if target else '' }}">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="f-cluster">Cluster</label>
+        <input type="text" id="f-cluster" name="cluster" placeholder="prod-cluster-1"
+               value="{{ target.cluster or '' if target else '' }}">
+      </div>
+      <div class="form-group">
+        <label for="f-env">Ortam</label>
+        <input type="text" id="f-env" name="env" placeholder="production"
+               value="{{ target.env or '' if target else '' }}">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="f-role">Rol</label>
+        <select id="f-role" name="role">
+          {% set current_role = target.role if target else 'default' %}
+          <option value="default" {{ 'selected' if current_role == 'default' else '' }}>default</option>
+          <option value="configsvr" {{ 'selected' if current_role == 'configsvr' else '' }}>configsvr</option>
+          <option value="mongos" {{ 'selected' if current_role == 'mongos' else '' }}>mongos</option>
+          <option value="arbiter" {{ 'selected' if current_role == 'arbiter' else '' }}>arbiter</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="f-profile">Kontrol Profili</label>
+        <select id="f-profile" name="check_profile">
+          {% set cp = target.check_profile if target else 'default' %}
+          <option value="default" {{ 'selected' if cp == 'default' else '' }}>default</option>
+          <option value="configsvr" {{ 'selected' if cp == 'configsvr' else '' }}>configsvr</option>
+          <option value="mongos" {{ 'selected' if cp == 'mongos' else '' }}>mongos</option>
+          <option value="arbiter" {{ 'selected' if cp == 'arbiter' else '' }}>arbiter</option>
+          <option value="standalone" {{ 'selected' if cp == 'standalone' else '' }}>standalone</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="f-exporter-url">Exporter URL Override</label>
+      <input type="text" id="f-exporter-url" name="exporter_url" placeholder="http://10.0.0.1:9216/metrics"
+             value="{{ target.exporter_url or '' if target else '' }}">
+      <span class="form-hint">Boş bırakılırsa IP:port üzerinden /metrics scrape edilir</span>
+    </div>
+    <div class="form-group">
+      <label for="f-mongo-uri">MongoDB URI (exporter'sız doğrudan bağlantı)</label>
+      <input type="text" id="f-mongo-uri" name="mongo_uri" placeholder="mongodb://kullanici:***@10.0.0.1:27017/?authSource=admin"
+             value="{{ target.mongo_uri or '' if target else '' }}">
+      <span class="form-hint">Doldurulursa exporter KULLANILMAZ — doğrudan MongoDB'ye bağlanır</span>
+    </div>
+    <div class="form-group">
+      <label for="f-notes">Notlar</label>
+      <textarea id="f-notes" name="notes" rows="2" placeholder="Opsiyonel notlar...">{{ target.notes or '' if target else '' }}</textarea>
+    </div>
+    <div class="form-group">
+      <label class="toggle" style="vertical-align:middle;">
+        <input type="checkbox" name="enabled" {{ 'checked' if not target or target.enabled else '' }}>
+        <span class="slider"></span>
+      </label>
+      <span class="text-sm text-muted" style="margin-left:8px;">Etkin</span>
+    </div>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-sm" onclick="closeModal()">İptal</button>
+    <button type="submit" class="btn btn-primary btn-sm">
+      {% if action == 'add' %}Sunucu Ekle{% else %}Değişiklikleri Kaydet{% endif %}
+    </button>
+  </div>
+</form>
+
+<script>
+(function () {
+  var form = document.getElementById('target-form');
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var type = form.getAttribute('data-form-type');
+    var id = form.getAttribute('data-target-id');
+    var fd = new FormData(form);
+    var payload = {};
+    fd.forEach(function (v, k) {
+      if (k === 'port' || k === 'mongo_port') payload[k] = parseInt(v || '0', 10);
+      else if (k === 'enabled') payload[k] = v === 'on';
+      else payload[k] = v;
+    });
+
+    var url = type === 'add' ? '/api/targets' : '/api/targets/' + id;
+    var method = type === 'add' ? 'POST' : 'PUT';
+
+    // IP validation
+    var ipErr = document.getElementById('err-ip');
+    var ipVal = payload.ip || '';
+    var ipRe = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+    if (!ipRe.test(ipVal)) {
+      ipErr.textContent = 'Geçerli bir IPv4 adresi girin (örn. 10.0.0.1)';
+      document.getElementById('f-ip').classList.add('input-error');
+      return;
+    }
+    ipErr.textContent = '';
+    document.getElementById('f-ip').classList.remove('input-error');
+
+    fetch(url, {
+      method: method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    .then(function (r) {
+      if (!r.ok) return r.json().then(function (j) { throw new Error(j.detail || 'Request failed'); });
+      return r.json();
+    })
+    .then(function () {
+      closeModal();
+      window.toast(type === 'add' ? 'Sunucu eklendi' : 'Değişiklikler kaydedildi', 'success');
+      setTimeout(function () { window.location.reload(); }, 600);
+    })
+    .catch(function (err) {
+      window.toast(err.message || 'Kaydetme başarısız', 'error');
+    });
+  });
+})();
+</script>

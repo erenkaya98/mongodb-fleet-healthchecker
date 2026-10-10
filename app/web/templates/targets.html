@@ -1,0 +1,261 @@
+{# targets.html — Target yönetim sayfası #}
+{% extends "base.html" %}
+{% block title %}Targets — MongoHealth{% endblock %}
+{% block content %}
+
+<div class="page">
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">Sunucular</h1>
+      <p class="page-subtitle">{{ targets|length }} target</p>
+    </div>
+    <div class="page-actions">
+      <button class="btn btn-sm btn-ghost" id="density-toggle" aria-label="Satır yoğunluğunu değiştir">
+        <svg><use href="#i-layout"/></svg> Yoğunluk
+      </button>
+      <button class="btn btn-primary btn-sm" data-open-modal="/targets/add-form" aria-label="Add target">
+        <svg><use href="#i-plus"/></svg> Sunucu Ekle
+      </button>
+      <button class="btn btn-sm" data-open-modal="/targets/bulk-form" aria-label="Bulk import">
+        <svg><use href="#i-upload"/></svg> Toplu İçe Aktar
+      </button>
+    </div>
+  </div>
+
+  <div class="card">
+    {# ── Filters toolbar ── #}
+    <div class="filters-bar">
+      <div class="search-input">
+        <svg><use href="#i-search"/></svg>
+        <input type="search" id="target-search" placeholder="Ara (hostname / IP)…" aria-label="Search targets">
+      </div>
+      <select class="filter-select" id="filter-cluster" aria-label="Filter by cluster">
+        <option value="">Cluster: All</option>
+        {% set clusters = targets|map(attribute='cluster')|reject('none')|unique|sort %}
+        {% for c in clusters %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+      </select>
+      <select class="filter-select" id="filter-role" aria-label="Filter by role">
+        <option value="">Role: All</option>
+        {% set roles = targets|map(attribute='role')|reject('none')|unique|sort %}
+        {% for r in roles %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
+      </select>
+      <select class="filter-select" id="filter-env" aria-label="Filter by environment">
+        <option value="">Env: All</option>
+        {% set envs = targets|map(attribute='env')|reject('none')|unique|sort %}
+        {% for e in envs %}<option value="{{ e }}">{{ e }}</option>{% endfor %}
+      </select>
+      <select class="filter-select" id="filter-enabled" aria-label="Filter by enabled state">
+        <option value="">Enabled: All</option>
+        <option value="true">Enabled</option>
+        <option value="false">Disabled</option>
+      </select>
+      <span class="text-sm text-muted ml-auto" id="target-count"></span>
+    </div>
+
+    <div class="table-wrap" id="targets-table-wrap">
+      <table id="targets-table">
+        <thead>
+          <tr>
+            <th scope="col" class="sortable" data-sort="ip">IP <span class="sort-arrow"></span></th>
+            <th scope="col" class="sortable" data-sort="hostname">Hostname <span class="sort-arrow"></span></th>
+            <th scope="col" class="sortable" data-sort="cluster">Cluster <span class="sort-arrow"></span></th>
+            <th scope="col" class="sortable" data-sort="role">Role <span class="sort-arrow"></span></th>
+            <th scope="col" class="sortable" data-sort="env">Env <span class="sort-arrow"></span></th>
+            <th scope="col" class="sortable" data-sort="port">Port <span class="sort-arrow"></span></th>
+            <th scope="col">Enabled</th>
+            <th scope="col">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="targets-tbody">
+          {% for t in targets %}
+            {% include "target_row.html" %}
+          {% endfor %}
+          {% if not targets %}
+          <tr id="targets-empty-row"><td colspan="8">
+            <div class="empty-state">
+              <div class="empty-icon"><svg><use href="#i-server"/></svg></div>
+              <h3>Sunucu tanımlı değil</h3>
+              <p>İlk sunucunuzu yukarıdaki butonla ekleyin.</p>
+            </div>
+          </td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+
+    {# ── Pagination ── #}
+    <div class="pagination" id="targets-pagination">
+      <button class="btn btn-sm btn-ghost" id="page-prev" aria-label="Previous page">
+        <svg><use href="#i-chevron-left"/></svg> Prev
+      </button>
+      <span class="text-sm text-muted" id="page-info"></span>
+      <button class="btn btn-sm btn-ghost" id="page-next" aria-label="Next page">
+        Next <svg><use href="#i-chevron-right"/></svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+{# ── Modal ── #}
+<div id="modal-overlay" class="modal-overlay" role="dialog" aria-modal="true"
+     onclick="if(event.target===this)closeModal()">
+  <div class="modal" id="modal-content" onclick="event.stopPropagation()"></div>
+</div>
+
+{# ── Confirm dialog ── #}
+<div id="confirm-overlay" class="modal-overlay" role="dialog" aria-modal="true">
+  <div class="modal" style="max-width:440px;">
+    <div class="modal-header">
+      <h3 id="confirm-title">Confirm</h3>
+      <button class="btn-icon" onclick="closeConfirm()" aria-label="Close"><svg><use href="#i-x"/></svg></button>
+    </div>
+    <div class="modal-body">
+      <p class="confirm-message" id="confirm-message"></p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-sm" onclick="closeConfirm()">Cancel</button>
+      <button class="btn btn-sm btn-danger" id="confirm-ok" onclick="confirmAction()">
+        <svg><use href="#i-trash"/></svg> Delete
+      </button>
+    </div>
+  </div>
+</div>
+
+<style>
+  .pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-3);
+    padding: var(--s-3) var(--s-5);
+    border-top: 1px solid var(--border);
+  }
+</style>
+
+<script>
+(function () {
+  var rows = Array.from(document.querySelectorAll('#targets-tbody tr[data-search]'));
+  var PAGE_SIZE = 20;
+  var currentPage = 1;
+  var currentSort = { key: 'ip', dir: 'asc' };
+
+  function getRowData(r) {
+    return {
+      search: r.getAttribute('data-search').toLowerCase(),
+      cluster: r.getAttribute('data-cluster'),
+      role: r.getAttribute('data-role'),
+      env: r.getAttribute('data-env'),
+      enabled: r.getAttribute('data-enabled'),
+      ip: r.getAttribute('data-ip'),
+      hostname: r.getAttribute('data-hostname').toLowerCase(),
+      port: parseInt(r.getAttribute('data-port') || '0', 10)
+    };
+  }
+
+  function applyFiltersAndSort() {
+    var q = (document.getElementById('target-search').value || '').toLowerCase();
+    var fCluster = document.getElementById('filter-cluster').value;
+    var fRole = document.getElementById('filter-role').value;
+    var fEnv = document.getElementById('filter-env').value;
+    var fEnabled = document.getElementById('filter-enabled').value;
+
+    var visible = rows.filter(function (r) {
+      var d = getRowData(r);
+      if (q && d.search.indexOf(q) === -1) return false;
+      if (fCluster && d.cluster !== fCluster) return false;
+      if (fRole && d.role !== fRole) return false;
+      if (fEnv && d.env !== fEnv) return false;
+      if (fEnabled && d.enabled !== fEnabled) return false;
+      return true;
+    });
+
+    visible.sort(function (a, b) {
+      var da = getRowData(a), db = getRowData(b);
+      var va = da[currentSort.key], vb = db[currentSort.key];
+      if (typeof va === 'number' && typeof vb === 'number') {
+        return currentSort.dir === 'asc' ? va - vb : vb - va;
+      }
+      va = String(va); vb = String(vb);
+      var cmp = va.localeCompare(vb);
+      return currentSort.dir === 'asc' ? cmp : -cmp;
+    });
+
+    // Pagination
+    var totalPages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
+    if (currentPage > totalPages) currentPage = totalPages;
+    var start = (currentPage - 1) * PAGE_SIZE;
+    var pageItems = visible.slice(start, start + PAGE_SIZE);
+
+    rows.forEach(function (r) { r.style.display = 'none'; });
+    pageItems.forEach(function (r) { r.style.display = ''; });
+
+    document.getElementById('target-count').textContent = visible.length + ' gösteriliyor';
+    document.getElementById('page-info').textContent =
+      visible.length === 0 ? '0 sonuç' : (start + 1) + '–' + (start + pageItems.length) + ' / ' + visible.length;
+    document.getElementById('page-prev').disabled = currentPage <= 1;
+    document.getElementById('page-next').disabled = currentPage >= totalPages;
+  }
+
+  // Search
+  document.getElementById('target-search').addEventListener('input', function () {
+    currentPage = 1;
+    applyFiltersAndSort();
+  });
+
+  // Filters
+  ['filter-cluster', 'filter-role', 'filter-env', 'filter-enabled'].forEach(function (id) {
+    document.getElementById(id).addEventListener('change', function () {
+      currentPage = 1;
+      applyFiltersAndSort();
+    });
+  });
+
+  // Sorting
+  document.querySelectorAll('#targets-table th.sortable').forEach(function (th) {
+    th.addEventListener('click', function () {
+      var key = th.getAttribute('data-sort');
+      if (currentSort.key === key) {
+        currentSort.dir = currentSort.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        currentSort.key = key;
+        currentSort.dir = 'asc';
+      }
+      document.querySelectorAll('#targets-table th.sortable').forEach(function (h) {
+        h.removeAttribute('data-sort-dir');
+        if (h === th) h.setAttribute('data-sort-dir', currentSort.dir);
+      });
+      applyFiltersAndSort();
+    });
+  });
+
+  // Pagination
+  document.getElementById('page-prev').addEventListener('click', function () {
+    if (currentPage > 1) { currentPage--; applyFiltersAndSort(); }
+  });
+  document.getElementById('page-next').addEventListener('click', function () {
+    currentPage++; applyFiltersAndSort();
+  });
+
+  // Density toggle
+  var compact = false;
+  document.getElementById('density-toggle').addEventListener('click', function () {
+    compact = !compact;
+    document.getElementById('targets-table-wrap').classList.toggle('density-compact', compact);
+  });
+
+  // ── Drill-down: URL query param'larını filtreye uygula (?cluster=, ?role=, ?env=) ──
+  (function () {
+    var params = new URLSearchParams(window.location.search);
+    var cluster = params.get('cluster');
+    var role = params.get('role');
+    var env = params.get('env');
+    if (cluster) document.getElementById('filter-cluster').value = cluster;
+    if (role) document.getElementById('filter-role').value = role;
+    if (env) document.getElementById('filter-env').value = env;
+  })();
+
+  applyFiltersAndSort();
+})();
+</script>
+
+{% endblock %}

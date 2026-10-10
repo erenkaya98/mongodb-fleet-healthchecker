@@ -1,0 +1,260 @@
+{# target_detail.html — Target detay sayfası #}
+{% extends "base.html" %}
+{% block title %}{{ target.hostname or target.ip }} — MongoHealth{% endblock %}
+{% block content %}
+
+<div class="page">
+  <div class="page-header">
+    <div>
+      <div style="display:flex;align-items:center;gap:var(--s-2);">
+        <a href="/targets" class="btn btn-sm btn-ghost" aria-label="Targets'a dön">
+          <svg><use href="#i-chevron-left"/></svg> Targets
+        </a>
+      </div>
+      <div style="display:flex;align-items:center;gap:var(--s-3);flex-wrap:wrap;margin-top:var(--s-2);">
+        <span class="dot {{ 'dot-ok' if target.enabled else 'dot-critical' }}" style="width:9px;height:9px;box-shadow:0 0 0 3px var(--ok-bg);"></span>
+        <h1 class="page-title" style="font-family:var(--font-mono);font-size:21px;">
+          {{ target.hostname or target.ip }}<span class="text-muted">:{{ target.mongo_port }}</span>
+        </h1>
+        {% if target.enabled %}
+        <span class="badge status-ok">enabled</span>
+        {% else %}
+        <span class="badge status-critical">disabled</span>
+        {% endif %}
+        <span class="badge badge-neutral">{{ target.collection_mode }}</span>
+      </div>
+    </div>
+    <div class="page-actions">
+      <button class="btn btn-sm" data-open-modal="/targets/{{ target.id }}/edit-form" aria-label="Düzenle">
+        <svg><use href="#i-edit"/></svg> Düzenle
+      </button>
+    </div>
+  </div>
+
+  {# ── OS Metrikleri (metric kartları) ── #}
+  {% if history %}
+  {% set latest = history[0] %}
+  <div class="metric-grid">
+    {# Disk #}
+    <div class="metric-card">
+      <div class="metric-label">Disk Kullanımı</div>
+      {% if latest.metrics.get('mongodb_fs_used_percent') is not none %}
+      {% set disk_pct = latest.metrics['mongodb_fs_used_percent'] %}
+      <div class="metric-value">
+        <span class="val" style="color:{{ 'var(--crit)' if disk_pct >= 95 else ('var(--warn)' if disk_pct >= 85 else 'var(--text-primary)') }};">{{ '%.1f' % disk_pct }}</span>
+        <span class="unit">%</span>
+      </div>
+      <div class="metric-sub">{{ '%.0f' % latest.metrics['mongodb_fs_used_gb'] }} / {{ '%.0f' % latest.metrics['mongodb_fs_total_gb'] }} GB</div>
+      <div class="metric-bar"><div class="fill" style="width:{{ [disk_pct, 100]|min }}%;background:{{ 'var(--crit)' if disk_pct >= 95 else ('var(--warn)' if disk_pct >= 85 else 'var(--ok)') }};"></div></div>
+      {% else %}
+      <div class="text-muted mt-2">—</div>
+      {% endif %}
+    </div>
+    {# RAM #}
+    <div class="metric-card">
+      <div class="metric-label">MongoDB RAM (RSS)</div>
+      {% if latest.metrics.get('mongodb_mem_resident_mb') is not none %}
+      {% set ram_mb = latest.metrics['mongodb_mem_resident_mb'] %}
+      {% set ram_total = latest.metrics.get('mongodb_mem_total_mb', 0) %}
+      {% set ram_pct = ((ram_mb / ram_total) * 100) if ram_total else 0 %}
+      <div class="metric-value">
+        <span class="val" style="color:{{ 'var(--crit)' if ram_pct >= 90 else ('var(--warn)' if ram_pct >= 70 else 'var(--text-primary)') }};">{{ '%.0f' % ram_mb }}</span>
+        <span class="unit">MB</span>
+      </div>
+      <div class="metric-sub">toplam {{ '%.0f' % ram_total }} MB ({{ '%.0f' % ram_pct }}%)</div>
+      <div class="metric-bar"><div class="fill" style="width:{{ [ram_pct, 100]|min }}%;background:{{ 'var(--crit)' if ram_pct >= 90 else ('var(--warn)' if ram_pct >= 70 else 'var(--ok)') }};"></div></div>
+      {% else %}
+      <div class="text-muted mt-2">—</div>
+      {% endif %}
+    </div>
+    {# Bağlantılar #}
+    <div class="metric-card">
+      <div class="metric-label">Bağlantılar</div>
+      {% if latest.metrics.get('mongodb_ss_connections') is not none %}
+      <div class="metric-value">
+        <span class="val">{{ latest.metrics['mongodb_ss_connections'] }}</span>
+      </div>
+      <div class="metric-sub">current/available</div>
+      {% else %}
+      <div class="text-muted mt-2">—</div>
+      {% endif %}
+    </div>
+    {# Yavaş sorgu #}
+    <div class="metric-card">
+      <div class="metric-label">Yavaş Sorgu (son 5dk)</div>
+      {% if latest.metrics.get('mongodb_slow_query_total') is not none %}
+      {% set sq_total = latest.metrics['mongodb_slow_query_total'] %}
+      <div class="metric-value">
+        <span class="val" style="color:{{ 'var(--crit)' if sq_total >= 20 else ('var(--warn)' if sq_total >= 5 else 'var(--text-primary)') }};">{{ '%.0f' % sq_total }}</span>
+      </div>
+      <div class="metric-sub">≥ 100ms</div>
+      {% else %}
+      <div class="text-muted mt-2">—</div>
+      {% endif %}
+    </div>
+    {# En yavaş #}
+    <div class="metric-card">
+      <div class="metric-label">En Yavaş Sorgu</div>
+      {% if latest.metrics.get('mongodb_slow_query_max_ms') is not none %}
+      {% set sq_max = latest.metrics['mongodb_slow_query_max_ms'] %}
+      <div class="metric-value">
+        <span class="val" style="color:{{ 'var(--crit)' if sq_max >= 5000 else ('var(--warn)' if sq_max >= 1000 else 'var(--text-primary)') }};">{{ '%.0f' % sq_max }}</span>
+        <span class="unit">ms</span>
+      </div>
+      <div class="metric-sub">penceredeki maksimum</div>
+      {% else %}
+      <div class="text-muted mt-2">—</div>
+      {% endif %}
+    </div>
+    {# WT Cache #}
+    <div class="metric-card">
+      <div class="metric-label">WT Cache</div>
+      {% if latest.metrics.get('mongodb_wt_cache_used_percent') is not none %}
+      {% set wt_pct = latest.metrics['mongodb_wt_cache_used_percent'] %}
+      <div class="metric-value">
+        <span class="val" style="color:{{ 'var(--crit)' if wt_pct >= 85 else ('var(--warn)' if wt_pct >= 70 else 'var(--text-primary)') }};">{{ '%.1f' % wt_pct }}</span>
+        <span class="unit">%</span>
+      </div>
+      <div class="metric-sub">dirty {{ '%.1f' % latest.metrics.get('mongodb_wt_cache_dirty_percent', 0) }}%</div>
+      <div class="metric-bar"><div class="fill" style="width:{{ [wt_pct, 100]|min }}%;background:{{ 'var(--crit)' if wt_pct >= 85 else ('var(--warn)' if wt_pct >= 70 else 'var(--ok)') }};"></div></div>
+      {% else %}
+      <div class="text-muted mt-2">—</div>
+      {% endif %}
+    </div>
+    {# Versiyon #}
+    <div class="metric-card">
+      <div class="metric-label">Versiyon</div>
+      {% if latest.metrics.get('mongodb_mongod_version') is not none %}
+      {% set ver = latest.metrics['mongodb_mongod_version'] %}
+      {% set ver_color = 'var(--crit)' if ver <= 4.4 else ('var(--warn)' if ver <= 5.0 else 'var(--text-primary)') %}
+      <div class="metric-value">
+        <span class="val" style="color:{{ ver_color }};">{{ ver }}</span>
+      </div>
+      <div class="metric-sub">
+        {% if latest.metrics.get('mongodb_fcv_version') is not none %}
+        FCV {{ latest.metrics['mongodb_fcv_version'] }}
+        {% else %}
+        FCV —
+        {% endif %}
+      </div>
+      {% else %}
+      <div class="text-muted mt-2">—</div>
+      {% endif %}
+    </div>
+    {# Security #}
+    <div class="metric-card">
+      <div class="metric-label">Güvenlik</div>
+      {% if latest.metrics.get('mongodb_security_authorization_enabled') is not none %}
+      {% set auth = latest.metrics['mongodb_security_authorization_enabled'] %}
+      {% set auth_color = 'var(--ok)' if auth == 1 else 'var(--crit)' %}
+      <div class="metric-value">
+        <span class="val" style="color:{{ auth_color }};">{{ 'Açık' if auth == 1 else 'Kapalı' }}</span>
+      </div>
+      <div class="metric-sub">
+        {% if latest.metrics.get('mongodb_net_bindip_public') is not none %}
+        bindIp {{ 'public' if latest.metrics['mongodb_net_bindip_public'] == 1 else 'private' }}
+        {% else %}
+        bindIp —
+        {% endif %}
+      </div>
+      {% else %}
+      <div class="text-muted mt-2">—</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Bilgi + Timeline/Sonuçlar (iki kolon) ── #}
+  <div class="section-grid mt-4">
+
+    {# Bilgi paneli #}
+    <div class="card">
+      <div class="card-body">
+        <h2 class="section-label" style="margin-bottom:var(--s-3);">Bilgi</h2>
+        <div class="kv-row"><span class="k">IP</span><span class="v">{{ target.ip }}</span></div>
+        <div class="kv-row"><span class="k">Exporter Port</span><span class="v">{{ target.port }}</span></div>
+        <div class="kv-row"><span class="k">Mongo Port</span><span class="v">{{ target.mongo_port }}</span></div>
+        <div class="kv-row"><span class="k">Cluster</span><span class="v">{{ target.cluster or '-' }}</span></div>
+        <div class="kv-row"><span class="k">Rol</span><span class="v">{{ target.role or 'default' }}</span></div>
+        <div class="kv-row"><span class="k">Env</span><span class="v">{{ target.env or '-' }}</span></div>
+        <div class="kv-row"><span class="k">Check Profile</span><span class="v">{{ target.check_profile }}</span></div>
+        {% if target.exporter_url %}
+        <div class="kv-row"><span class="k">Exporter URL</span><span class="v">{{ target.exporter_url }}</span></div>
+        {% endif %}
+        {% if target.notes %}
+        <div class="kv-row"><span class="k">Notlar</span><span class="v">{{ target.notes }}</span></div>
+        {% endif %}
+      </div>
+    </div>
+
+    {# Timeline + Sonuçlar #}
+    <div style="display:flex;flex-direction:column;gap:var(--s-4);">
+      <div class="card">
+        <div class="card-header">
+          <h2>24 Saat Durum</h2>
+          <span class="card-header-meta">{{ history[:96]|length }} kontrol</span>
+        </div>
+        <div class="card-body">
+          <div class="timeline">
+            {% for h in history[:96]|reverse %}
+            <div class="timeline-bar timeline-bar-{{ h.status.value[:4] if h.status.value.startswith('warn') else h.status.value[:2] }}"
+                 data-tooltip="{{ h.ts|localtime('%H:%M') }} — {{ h.status.value }}">
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2>Son Sonuçlar</h2>
+          <span class="card-header-meta">{{ history[:20]|length }} sonuç</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Zaman</th>
+                <th scope="col">Durum</th>
+                <th scope="col">Gecikme</th>
+                <th scope="col">Hata</th>
+                <th scope="col">Kontroller</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for h in history[:20] %}
+              <tr>
+                <td class="mono text-sm">{{ h.ts|localtime('%H:%M:%S') }}</td>
+                <td>
+                  <span class="status-indicator status-{{ h.status.value }}">
+                    {% if h.status.value == 'critical' %}<svg><use href="#i-alert"/></svg>{% elif h.status.value == 'ok' %}<svg><use href="#i-check"/></svg>{% else %}<svg><use href="#i-info"/></svg>{% endif %}
+                    {{ h.status.value }}
+                  </span>
+                </td>
+                <td class="mono text-sm">{{ '%.0f' % h.latency_ms }}ms</td>
+                <td class="text-sm text-muted">{{ h.error or '-' }}</td>
+                <td>
+                  {% for c in h.checks %}
+                  <span class="badge status-{{ c.status.value }}" style="margin-right:4px;"
+                        data-tooltip="{{ c.message }}">
+                    {{ c.rule_id }}
+                  </span>
+                  {% endfor %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <div class="empty-icon"><svg><use href="#i-activity"/></svg></div>
+    <h3>Henüz geçmiş yok</h3>
+    <p>Sonuçlar bir sonraki health check çalışmasından sonra burada görünecek.</p>
+  </div>
+  {% endif %}
+</div>
+
+{% endblock %}

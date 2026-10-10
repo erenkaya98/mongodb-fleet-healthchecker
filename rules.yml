@@ -1,0 +1,599 @@
+# MongoDB Fleet Healthchecker - Rule Definitions
+# ==============================================
+# Her kural: id, title, metric, labels (filtre), aggregation, op, warning, critical
+# aggregation option: selects a single value to compare
+# A missing metric yields UNKNOWN and never fails the run.
+
+profiles:
+  default:
+    - id: exporter_reachable
+      title: Exporter erişilebilirliği
+      metric: [scrape_ok]
+      labels: {}
+      aggregation: value
+      op: ne
+      warning: null
+      critical: 1
+      unit: ""
+      enabled: true
+      description: "Exporter /metrics endpoint must return HTTP 200"
+
+    - id: scrape_latency
+      title: Scrape gecikmesi
+      metric: [scrape_latency_ms]
+      labels: {}
+      aggregation: value
+      op: gte
+      warning: 5000
+      critical: 15000
+      unit: ms
+      enabled: true
+      description: "Completion time of the scrape HTTP request"
+
+    - id: mongodb_up
+      title: MongoDB process up
+      metric: [mongodb_up]
+      labels: {}
+      aggregation: value
+      op: ne
+      warning: null
+      critical: 1
+      unit: ""
+      enabled: true
+      description: "Is the mongod process running? mongodb_up must be 1"
+
+    - id: replset_state
+      title: Replica set state
+      metric: [mongodb_mongod_replset_my_state]
+      labels: {}
+      aggregation: value
+      op: ne
+      warning: []        # List of expected values -> OK when the value is in it
+      critical: [1, 2]   # PRIMARY(1), SECONDARY(2) expected; anything else -> WARNING
+      unit: ""
+      enabled: true
+      description: "Replica set member state: 1=PRIMARY, 2=SECONDARY expected"
+
+    - id: replset_health
+      title: Replica set üye sağlığı
+      metric: [mongodb_mongod_replset_member_health]
+      labels: {}
+      aggregation: min
+      op: lt
+      warning: null
+      critical: 1
+      unit: ""
+      enabled: true
+      description: "Every replset member must report health = 1"
+
+    - id: replication_lag
+      title: Replikasyon gecikmesi
+      metric: [mongodb_mongod_replset_member_replication_lag]
+      labels: {}
+      aggregation: max
+      op: gte
+      warning: 30
+      critical: 120
+      unit: s
+      enabled: true
+      description: "Highest replication lag across members"
+
+    - id: connections_saturation
+      title: Bağlantı doygunluğu
+      metric: [mongodb_ss_connections]
+      labels: {}
+      aggregation: ratio
+      op: gte
+      warning: 0.70
+      critical: 0.85
+      unit: "%"
+      enabled: true
+      description: "current / (current+available) connection ratio"
+
+    - id: oplog_window_hours
+      title: Oplog penceresi
+      metric:
+        - mongodb_mongod_replset_oplog_head_timestamp
+        - mongodb_mongod_replset_oplog_tail_timestamp
+      labels: {}
+      aggregation: oplog_window
+      op: lt
+      warning: 24
+      critical: 6
+      unit: saat
+      enabled: true
+      description: "Oplog head-tail difference, in hours. Lower = riskier."
+
+    - id: member_count
+      title: Replica set üye sayısı
+      metric: [mongodb_mongod_replset_number_of_members]
+      labels: {}
+      aggregation: value
+      op: lt
+      warning: 3
+      critical: 2
+      unit: ""
+      enabled: true
+      description: "Expected replset member count. A drop risks losing quorum."
+
+    - id: disk_usage
+      title: Disk doluluk oranı
+      metric: [mongodb_fs_used_percent]
+      labels: {}
+      aggregation: value
+      op: gte
+      warning: 80
+      critical: 90
+      unit: "%"
+      enabled: true
+      description: "Utilization percentage of the filesystem holding the MongoDB data directory"
+
+    - id: memory_usage
+      title: MongoDB bellek kullanımı
+      metric:
+        - mongodb_mem_resident_mb
+        - mongodb_mem_total_mb
+      labels: {}
+      aggregation: mem_ratio
+      op: gte
+      warning: 70
+      critical: 90
+      unit: "%"
+      enabled: true
+      description: "mongod resident RAM / total system RAM ratio"
+
+    - id: global_lock_queue
+      title: Global lock bekleme kuyruğu
+      metric: [mongodb_globalLock_currentQueue]
+      labels: {}
+      aggregation: value
+      op: gte
+      warning: 10
+      critical: 50
+      unit: "op"
+      enabled: true
+      description: "Operations queued on locks (a CPU/disk bottleneck signal)"
+
+    - id: cursor_timeouts
+      title: Cursor timeout artışı
+      metric: [mongodb_ss_timedOutCursors]
+      labels: {}
+      aggregation: delta
+      op: gte
+      warning: 10
+      critical: 100
+      unit: "/5dk"
+      enabled: false
+      description: "Cursor timeout increase between the last two runs"
+
+    - id: slow_query_count
+      title: Yavaş sorgu sayısı
+      metric: [mongodb_slow_query_total]
+      labels: {}
+      aggregation: value
+      op: gte
+      warning: 20
+      critical: 100
+      unit: "adet/5dk"
+      enabled: true
+      description: "Slow queries recorded in system.profile within the window (profiler must be on)"
+
+    - id: slow_query_max_ms
+      title: En yavaş sorgu süresi
+      metric: [mongodb_slow_query_max_ms]
+      labels: {}
+      aggregation: value
+      op: gte
+      warning: 1000
+      critical: 5000
+      unit: ms
+      enabled: true
+      description: "Duration of the slowest query in the window"
+
+    # ── A3: WiredTiger Cache & Tickets ─────────────────────────
+    - id: wt_cache_used_percent
+      title: WiredTiger cache doluluk oranı
+      metric: [mongodb_wt_cache_used_percent]
+      labels: {}
+      aggregation: value
+      op: gte
+      warning: 90
+      critical: 95
+      unit: "%"
+      enabled: true
+      description: "WiredTiger cache usage percentage (an eviction pressure indicator)"
+
+    - id: wt_cache_dirty_percent
+      title: WiredTiger dirty cache oranı
+      metric: [mongodb_wt_cache_dirty_percent]
+      labels: {}
+      aggregation: value
+      op: gte
+      warning: 20
+      critical: 40
+      unit: "%"
+      enabled: true
+      description: "WT dirty bytes / total cache ratio (checkpoint pressure)"
+
+    - id: wt_read_tickets
+      title: WT read ticket availability
+      metric: [mongodb_wt_read_tickets_available]
+      labels: {}
+      aggregation: value
+      op: lt
+      warning: 2
+      critical: 1
+      unit: ""
+      enabled: true
+      skip_when_absent: true
+      description: "Concurrent read tickets (0 = fully saturated; metric absent on 8.0+, rule skipped)"
+
+    - id: wt_write_tickets
+      title: WT write ticket availability
+      metric: [mongodb_wt_write_tickets_available]
+      labels: {}
+      aggregation: value
+      op: lt
+      warning: 2
+      critical: 1
+      unit: ""
+      enabled: true
+      skip_when_absent: true
+      description: "Concurrent write tickets (0 = fully saturated; metric absent on 8.0+, rule skipped)"
+
+    # ── A9: Version & EOL ──────────────────────────────────────
+    - id: mongod_version_eol
+      title: MongoDB versiyonu (EOL kontrolü)
+      metric: [mongodb_mongod_version]
+      labels: {}
+      aggregation: value
+      op: lte
+      warning: 5.0
+      critical: 4.4
+      unit: ""
+      enabled: true
+      description: "EOL versiyon: 4.4 = crit, 5.0 = warn, 7.0+ = OK"
+
+    - id: fcv_mismatch
+      title: FCV uyumsuzluğu
+      metric:
+        - mongodb_fcv_version
+        - mongodb_mongod_version
+      labels: {}
+      aggregation: fcv_mismatch
+      op: gt
+      warning: null
+      critical: 0
+      unit: ""
+      enabled: true
+      description: "FCV < mongod version -> upgrade not finished"
+
+    # ── A8: Security & Compliance ──────────────────────────────
+    - id: security_authorization
+      title: MongoDB authorization
+      metric: [mongodb_security_authorization_enabled]
+      labels: {}
+      aggregation: value
+      op: ne
+      warning: 1
+      critical: null
+      unit: ""
+      enabled: true
+      description: "authorization disabled -> warning (assumes an internal firewalled network; see security_auth_exposed for crit)"
+
+    - id: security_bindip_public
+      title: Public bindIp
+      metric: [mongodb_net_bindip_public]
+      labels: {}
+      aggregation: value
+      op: ne
+      warning: 0
+      critical: null
+      unit: ""
+      enabled: true
+      description: "bindIp 0.0.0.0/::* -> warning (standard practice on an internal network; see security_auth_exposed for crit)"
+
+    - id: security_auth_exposed
+      title: Auth kapalı + public bindIp (açık erişim)
+      metric:
+        - mongodb_security_authorization_enabled
+        - mongodb_net_bindip_public
+      labels: {}
+      aggregation: auth_exposed
+      op: gt
+      warning: null
+      critical: 0
+      unit: ""
+      enabled: true
+      description: "authorization=disabled AND bindIp=public -> crit (unauthenticated full access over the network)"
+
+    - id: assert_warnings
+      title: Assert warning artışı
+      metric: [mongodb_ss_asserts_warning]
+      labels: {}
+      aggregation: delta
+      op: gte
+      warning: 5
+      critical: 50
+      unit: "/5dk"
+      enabled: false
+      description: "Assert warning increase between the last two runs"
+
+  configsvr:
+    - id: mongodb_up
+      title: Config server up
+      metric: [mongodb_up]
+      labels: {}
+      aggregation: value
+      op: ne
+      warning: null
+      critical: 1
+      unit: ""
+      enabled: true
+      description: "Config server up check"
+
+    - id: replset_state
+      title: Config server replset state
+      metric: [mongodb_mongod_replset_my_state]
+      labels: {}
+      aggregation: value
+      op: ne
+      warning: []
+      critical: [1, 2]
+      unit: ""
+      enabled: true
+      description: "Config server: 1=PRIMARY, 2=SECONDARY beklenir"
+
+  mongos:
+    - id: mongodb_up
+      title: Mongos up
+      metric: [mongodb_up]
+      labels: {}
+      aggregation: value
+      op: ne
+      warning: null
+      critical: 1
+      unit: ""
+      enabled: true
+      description: "Mongos process up check"
+
+    - id: connections_saturation
+      title: Mongos bağlantı doygunluğu
+      metric: [mongodb_ss_connections]
+      labels: {}
+      aggregation: ratio
+      op: gte
+      warning: 0.70
+      critical: 0.85
+      unit: "%"
+      enabled: true
+      description: "Mongos current/available connection ratio"
+
+  standalone:
+    - id: mongodb_up
+      title: MongoDB process up
+      metric: [mongodb_up]
+      labels: {}
+      aggregation: value
+      op: ne
+      warning: null
+      critical: 1
+      unit: ""
+      enabled: true
+      description: "Standalone mongod process up check"
+
+    - id: connections_saturation
+      title: Bağlantı doygunluğu
+      metric: [mongodb_ss_connections]
+      labels: {}
+      aggregation: ratio
+      op: gte
+      warning: 0.70
+      critical: 0.85
+      unit: "%"
+      enabled: true
+      description: "Standalone current/available connection ratio"
+
+    - id: disk_usage
+      title: Disk doluluk oranı
+      metric: [mongodb_fs_used_percent]
+      labels: {}
+      aggregation: value
+      op: gte
+      warning: 80
+      critical: 90
+      unit: "%"
+      enabled: true
+      description: "Utilization percentage of the filesystem holding the MongoDB data directory"
+
+    - id: memory_usage
+      title: MongoDB bellek kullanımı
+      metric:
+        - mongodb_mem_resident_mb
+        - mongodb_mem_total_mb
+      labels: {}
+      aggregation: mem_ratio
+      op: gte
+      warning: 70
+      critical: 90
+      unit: "%"
+      enabled: true
+      description: "mongod resident RAM / total system RAM ratio"
+
+    - id: global_lock_queue
+      title: Global lock bekleme kuyruğu
+      metric: [mongodb_globalLock_currentQueue]
+      labels: {}
+      aggregation: value
+      op: gte
+      warning: 10
+      critical: 50
+      unit: "op"
+      enabled: true
+      description: "Operations queued on locks (a CPU/disk bottleneck signal)"
+
+    - id: slow_query_count
+      title: Yavaş sorgu sayısı
+      metric: [mongodb_slow_query_total]
+      labels: {}
+      aggregation: value
+      op: gte
+      warning: 20
+      critical: 100
+      unit: "adet/5dk"
+      enabled: true
+      description: "Slow queries recorded in system.profile within the window (profiler must be on)"
+
+    - id: slow_query_max_ms
+      title: En yavaş sorgu süresi
+      metric: [mongodb_slow_query_max_ms]
+      labels: {}
+      aggregation: value
+      op: gte
+      warning: 1000
+      critical: 5000
+      unit: ms
+      enabled: true
+      description: "Duration of the slowest query in the window"
+
+    # ── A3: WiredTiger (standalone) ────────────────────────────
+    - id: wt_cache_used_percent
+      title: WiredTiger cache doluluk oranı
+      metric: [mongodb_wt_cache_used_percent]
+      labels: {}
+      aggregation: value
+      op: gte
+      warning: 90
+      critical: 95
+      unit: "%"
+      enabled: true
+      description: "WiredTiger cache usage percentage"
+
+    - id: wt_cache_dirty_percent
+      title: WiredTiger dirty cache oranı
+      metric: [mongodb_wt_cache_dirty_percent]
+      labels: {}
+      aggregation: value
+      op: gte
+      warning: 20
+      critical: 40
+      unit: "%"
+      enabled: true
+      description: "WT dirty bytes / total cache ratio"
+
+    - id: wt_read_tickets
+      title: WT read ticket availability
+      metric: [mongodb_wt_read_tickets_available]
+      labels: {}
+      aggregation: value
+      op: lt
+      warning: 2
+      critical: 1
+      unit: ""
+      enabled: true
+      skip_when_absent: true
+      description: "Concurrent read tickets"
+
+    - id: wt_write_tickets
+      title: WT write ticket availability
+      metric: [mongodb_wt_write_tickets_available]
+      labels: {}
+      aggregation: value
+      op: lt
+      warning: 2
+      critical: 1
+      unit: ""
+      enabled: true
+      skip_when_absent: true
+      description: "Concurrent write tickets"
+
+    # ── A9: Version & EOL (standalone) ─────────────────────────
+    - id: mongod_version_eol
+      title: MongoDB versiyonu (EOL kontrolü)
+      metric: [mongodb_mongod_version]
+      labels: {}
+      aggregation: value
+      op: lte
+      warning: 5.0
+      critical: 4.4
+      unit: ""
+      enabled: true
+      description: "EOL versiyon: 4.4 = crit, 5.0 = warn, 7.0+ = OK"
+
+    - id: fcv_mismatch
+      title: FCV uyumsuzluğu
+      metric:
+        - mongodb_fcv_version
+        - mongodb_mongod_version
+      labels: {}
+      aggregation: fcv_mismatch
+      op: gt
+      warning: null
+      critical: 0
+      unit: ""
+      enabled: true
+      description: "FCV < mongod version -> upgrade not finished"
+
+    # ── A8: Security & Compliance (standalone) ─────────────────
+    - id: security_authorization
+      title: MongoDB authorization
+      metric: [mongodb_security_authorization_enabled]
+      labels: {}
+      aggregation: value
+      op: ne
+      warning: 1
+      critical: null
+      unit: ""
+      enabled: true
+      description: "authorization disabled -> warning"
+
+    - id: security_bindip_public
+      title: Public bindIp
+      metric: [mongodb_net_bindip_public]
+      labels: {}
+      aggregation: value
+      op: ne
+      warning: 0
+      critical: null
+      unit: ""
+      enabled: true
+      description: "bindIp 0.0.0.0/::* → warning"
+
+    - id: security_auth_exposed
+      title: Auth kapalı + public bindIp (açık erişim)
+      metric:
+        - mongodb_security_authorization_enabled
+        - mongodb_net_bindip_public
+      labels: {}
+      aggregation: auth_exposed
+      op: gt
+      warning: null
+      critical: 0
+      unit: ""
+      enabled: true
+      description: "authorization=disabled VE bindIp=public → crit"
+
+  arbiter:
+    - id: exporter_reachable
+      title: Arbiter exporter erişilebilirliği
+      metric: [scrape_ok]
+      labels: {}
+      aggregation: value
+      op: ne
+      warning: null
+      critical: 1
+      unit: ""
+      enabled: true
+      description: "Arbiter exporter reachability check"
+
+    - id: mongodb_up
+      title: Arbiter up
+      metric: [mongodb_up]
+      labels: {}
+      aggregation: value
+      op: ne
+      warning: null
+      critical: 1
+      unit: ""
+      enabled: true
+      description: "Is the arbiter process running"

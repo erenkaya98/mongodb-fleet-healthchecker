@@ -1,0 +1,196 @@
+{# slow_queries.html — Yavaş Sorgu Analizi #}
+{% extends "base.html" %}
+{% block title %}Slow Queries — MongoHealth{% endblock %}
+{% block content %}
+
+<div class="page">
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">Yavaş Sorgular</h1>
+      <p class="page-subtitle">system.profile'dan snapshot'lanan yavaş sorgular (son 7 gün)</p>
+    </div>
+    <div class="page-actions">
+      <a href="/api/slow-queries" class="btn btn-sm btn-ghost" target="_blank">JSON API</a>
+    </div>
+  </div>
+
+  {# ── Host özeti ── #}
+  <div class="card">
+    <div class="card-header">
+      <h2>Sunucu Bazında Özet</h2>
+      <span class="card-header-meta">{{ summary|length }} sunucuda yavaş sorgu</span>
+    </div>
+    {% if summary %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Host</th>
+            <th scope="col">Cluster</th>
+            <th scope="col">Sorgu</th>
+            <th scope="col">Max ms</th>
+            <th scope="col">Son Görülme</th>
+            <th scope="col">Index Önerisi</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in summary %}
+          <tr>
+            <td>
+              <a href="/targets?host={{ s.hostname }}" class="mono">{{ s.hostname }}</a>
+              <span class="text-muted mono text-sm">{{ s.ip }}</span>
+            </td>
+            <td><span class="badge badge-neutral">{{ s.cluster }}</span></td>
+            <td class="mono">{{ s.count }}</td>
+            <td>
+              <span class="mono" style="font-weight:650;{{ 'color:var(--crit);' if s.max_ms >= 5000 else ('color:var(--warn);' if s.max_ms >= 1000 else '') }}">
+                {{ s.max_ms }}ms
+              </span>
+            </td>
+            <td class="mono text-sm">{{ s.last_seen|localtime if s.last_seen else '-' }}</td>
+            <td>
+              {% for sug in s.suggestions if sug.create_index_cmd %}
+              <div class="code-block" style="margin-bottom:var(--s-2);">
+                <div style="display:flex;align-items:center;justify-content:space-between;padding:var(--s-1) var(--s-2);border-bottom:1px solid var(--border);">
+                  <span class="mono text-xs text-muted">{{ sug.ns }}</span>
+                  <button class="btn btn-sm btn-ghost copy-btn" data-copy="{{ sug.create_index_cmd }}" type="button">
+                    <svg><use href="#i-copy"/></svg> Kopyala
+                  </button>
+                </div>
+                <pre class="mono text-xs" style="margin:0;padding:var(--s-2);white-space:pre-wrap;word-break:break-all;">{{ sug.create_index_cmd }}</pre>
+              </div>
+              {% else %}
+              <span class="text-muted text-sm">—</span>
+              {% endfor %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <div class="empty-icon"><svg><use href="#i-activity"/></svg></div>
+      <h3>Henüz yavaş sorgu yok</h3>
+      <p>Profiler açık sunucularda eşiği (≥1000ms) aşan sorgular burada listelenir.</p>
+    </div>
+    {% endif %}
+  </div>
+
+  {# ── Sorgu detayları ── #}
+  <div class="card mt-4">
+    <div class="card-header">
+      <h2>Sorgu Detayları</h2>
+      <span class="card-header-meta">{{ queries|length }} sorgu (en yavaş önce)</span>
+    </div>
+    {% if queries %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Host</th>
+            <th scope="col">Namespace</th>
+            <th scope="col">Op</th>
+            <th scope="col">ms</th>
+            <th scope="col">Plan</th>
+            <th scope="col">Tarama</th>
+            <th scope="col">Sorgu</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for q in queries %}
+          <tr class="sq-row" data-command='{{ q.command|tojson if q.command else "{}" }}' data-host="{{ q.hostname }}" data-ns="{{ q.ns }}" data-ms="{{ q.millis }}">
+            <td class="mono text-sm">{{ q.hostname }}</td>
+            <td class="mono text-sm">{{ q.ns }}</td>
+            <td><span class="badge badge-neutral">{{ q.op }}</span></td>
+            <td>
+              <span class="mono" style="font-weight:650;{{ 'color:var(--crit);' if q.millis >= 5000 else ('color:var(--warn);' if q.millis >= 1000 else '') }}">
+                {{ q.millis }}ms
+              </span>
+            </td>
+            <td class="mono text-sm">{{ q.plan_summary or '-' }}</td>
+            <td class="text-sm">
+              {% if q.docs_examined is not none %}
+              <span class="mono">docs={{ q.docs_examined }}</span>
+              {% if q.nreturned is not none %}<span class="mono text-muted">→ {{ q.nreturned }}</span>{% endif %}
+              {% else %}-{% endif %}
+              {% if q.op == 'getmore' %}
+              <span class="text-muted text-xs" data-tooltip="getMore işlemi cursor'ın devamıdır; plan orijinal sorgunun planı değildir">
+                <svg style="width:12px;height:12px;vertical-align:-2px;"><use href="#i-info"/></svg> getMore
+              </span>
+              {% endif %}
+            </td>
+            <td>
+              <button class="btn btn-sm btn-ghost sq-toggle" type="button">
+                <svg><use href="#i-eye"/></svg> Görüntüle
+              </button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <p>Snapshot'lanmış sorgu detayı yok.</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{# ── Sorgu detay modal ── #}
+<div id="sq-modal" class="modal-overlay">
+  <div class="modal" style="max-width:720px;">
+    <div class="modal-header">
+      <h3 class="mono" id="sq-modal-title">Sorgu</h3>
+      <button class="btn btn-ghost" id="sq-modal-close" aria-label="Kapat">
+        <svg><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="text-sm text-muted" id="sq-modal-meta" style="margin-bottom:var(--s-3);"></div>
+      <pre class="mono text-sm code-block" style="padding:var(--s-3);white-space:pre-wrap;word-break:break-all;" id="sq-modal-json"></pre>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var modal = document.getElementById('sq-modal');
+  var title = document.getElementById('sq-modal-title');
+  var meta = document.getElementById('sq-modal-meta');
+  var jsonEl = document.getElementById('sq-modal-json');
+
+  function show(row) {
+    var cmd = row.getAttribute('data-command');
+    var host = row.getAttribute('data-host');
+    var ns = row.getAttribute('data-ns');
+    var ms = row.getAttribute('data-ms');
+    title.textContent = ns + '  (' + ms + 'ms)';
+    meta.textContent = host;
+    try {
+      jsonEl.textContent = JSON.stringify(JSON.parse(cmd), null, 2);
+    } catch (e) {
+      jsonEl.textContent = cmd;
+    }
+    modal.classList.add('active');
+  }
+
+  document.addEventListener('click', function (e) {
+    var toggle = e.target.closest('.sq-toggle');
+    if (toggle) {
+      show(toggle.closest('.sq-row'));
+      return;
+    }
+    if (e.target.id === 'sq-modal' || e.target.id === 'sq-modal-close' || e.target.closest('#sq-modal-close')) {
+      modal.classList.remove('active');
+    }
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') modal.classList.remove('active');
+  });
+})();
+</script>
+
+{% endblock %}

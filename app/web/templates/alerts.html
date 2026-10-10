@@ -1,0 +1,312 @@
+{# alerts.html — Alert sayfası #}
+{% extends "base.html" %}
+{% block title %}Alerts — MongoHealth{% endblock %}
+{% block content %}
+
+<div class="page">
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">Alertler</h1>
+      <p class="page-subtitle">{{ active|length }} aktif · {{ resolved|length }} çözülmüş</p>
+    </div>
+    <div class="page-actions">
+      <span class="badge {{ 'status-critical' if active else 'status-ok' }}">
+        <span class="dot {{ 'dot-critical' if active else 'dot-ok' }}"></span>
+        {{ active|length }} aktif
+      </span>
+    </div>
+  </div>
+
+  {# ── Split active by severity ── #}
+  {% set crit_alerts = active|selectattr('severity.value', 'equalto', 'critical')|list %}
+  {% set warn_alerts = active|selectattr('severity.value', 'equalto', 'warning')|list %}
+  {% set other_alerts = active|rejectattr('severity.value', 'in', ['critical', 'warning'])|list %}
+
+  {% macro alert_table(alerts, table_id) %}
+    {% if alerts %}
+    <div class="filters-bar">
+      <select class="filter-select alert-filter-rule" data-table="{{ table_id }}" aria-label="Filter by rule">
+        <option value="">Rule: All</option>
+        {% set rules = alerts|map(attribute='rule_id')|unique|sort %}
+        {% for r in rules %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
+      </select>
+      <select class="filter-select alert-filter-cluster" data-table="{{ table_id }}" aria-label="Filter by cluster">
+        <option value="">Cluster: All</option>
+        {% set clusters = alerts|map(attribute='payload')|map(attribute='cluster')|reject('none')|unique|sort %}
+        {% for c in clusters %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+      </select>
+      <span class="text-sm text-muted ml-auto alert-count" data-table="{{ table_id }}">{{ alerts|length }} gösteriliyor</span>
+    </div>
+
+    <div class="table-wrap">
+      <table id="{{ table_id }}" class="alerts-table">
+        <thead>
+          <tr>
+            <th scope="col"><input type="checkbox" class="alert-select-all" data-table="{{ table_id }}" aria-label="Tüm alertleri seç"></th>
+            <th scope="col">Target</th>
+            <th scope="col">Kural</th>
+            <th scope="col">Severity</th>
+            <th scope="col">Durum</th>
+            <th scope="col">İlk Görülme</th>
+            <th scope="col">Sayı</th>
+            <th scope="col">İşlem</th>
+          </tr>
+        </thead>
+        <tbody class="alerts-tbody">
+          {% set alerts_sorted = alerts|sort(attribute='target_id') %}
+          {% for a in alerts_sorted %}
+          <tr class="alert-row"
+              data-fingerprint="{{ a.fingerprint }}"
+              data-severity="{{ a.severity.value }}"
+              data-rule="{{ a.rule_id }}"
+              data-cluster="{{ a.payload.get('cluster','') }}"
+              data-target="{{ a.target_id }}"
+              data-first-seen="{{ a.first_seen_at.isoformat() if a.first_seen_at else '' }}">
+            <td>
+              <input type="checkbox" class="alert-checkbox" data-fingerprint="{{ a.fingerprint }}" aria-label="Select alert for {{ a.payload.get('hostname', a.target_id[:8]) }}">
+            </td>
+            <td>
+              <a href="/targets/{{ a.target_id }}" class="mono" style="color:var(--text-primary);text-decoration:none;">
+                {{ a.payload.get('hostname', a.target_id[:8]) }}
+              </a>
+            </td>
+            <td><span class="text-sm text-secondary">{{ a.rule_id }}</span></td>
+            <td>
+              <span class="status-indicator status-{{ a.severity.value }}">
+                {% if a.severity.value == 'critical' %}<svg><use href="#i-alert"/></svg>{% else %}<svg><use href="#i-info"/></svg>{% endif %}
+                {{ a.severity.value }}
+              </span>
+            </td>
+            <td>
+              {% if a.state.value == 'firing' %}
+              <span class="badge status-critical"><svg style="width:11px;height:11px;"><use href="#i-zap"/></svg> FIRING</span>
+              {% else %}
+              <span class="badge status-warning">PENDING</span>
+              {% endif %}
+            </td>
+            <td class="text-sm text-secondary since-cell" data-since="{{ a.first_seen_at.isoformat() if a.first_seen_at else '' }}">
+              {{ a.first_seen_at|localtime('%Y-%m-%d %H:%M') if a.first_seen_at else '-' }}
+            </td>
+            <td class="mono text-sm">{{ a.send_count }}</td>
+            <td>
+              <button class="btn btn-sm btn-ghost"
+                      data-silence-one="{{ a.fingerprint }}"
+                      aria-label="1 saat sustur">
+                <svg><use href="#i-bell-off"/></svg> 1s Sustur
+              </button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding:var(--s-6);">
+      <p class="text-muted">Bu seviyede aktif alert yok.</p>
+    </div>
+    {% endif %}
+  {% endmacro %}
+
+  {# ── Critical alerts ── #}
+  <div class="card">
+    <div class="card-header">
+      <h2>Kritik Alertler</h2>
+      <span class="card-header-meta">{{ crit_alerts|length }} critical</span>
+    </div>
+    {{ alert_table(crit_alerts, 'alerts-table-critical') }}
+  </div>
+
+  {# ── Warning alerts ── #}
+  <div class="card mt-4">
+    <div class="card-header">
+      <h2>Uyarı Alertler</h2>
+      <span class="card-header-meta">{{ warn_alerts|length }} warning</span>
+    </div>
+    {{ alert_table(warn_alerts, 'alerts-table-warning') }}
+  </div>
+
+  {% if other_alerts %}
+  <div class="card mt-4">
+    <div class="card-header">
+      <h2>Diğer Alertler</h2>
+      <span class="card-header-meta">{{ other_alerts|length }}</span>
+    </div>
+    {{ alert_table(other_alerts, 'alerts-table-other') }}
+  </div>
+  {% endif %}
+
+  {# ── Bulk silence bar ── #}
+  <div class="bulk-bar hidden" id="bulk-bar">
+    <span id="bulk-count">0 seçildi</span>
+    <button class="btn btn-sm btn-primary" data-bulk-silence="60" id="bulk-silence-1h">
+      <svg><use href="#i-bell-off"/></svg> 1s Sustur
+    </button>
+    <button class="btn btn-sm" data-bulk-silence="1440" id="bulk-silence-24h">
+      <svg><use href="#i-bell-off"/></svg> 24s Sustur
+    </button>
+    <button class="btn btn-sm btn-ghost" id="bulk-clear" aria-label="Seçimi temizle">Temizle</button>
+  </div>
+
+  {% if not active %}
+  <div class="card">
+    <div class="empty-state">
+      <div class="empty-icon"><svg><use href="#i-check"/></svg></div>
+      <h3>Aktif alert yok</h3>
+      <p>Her şey yolunda görünüyor.</p>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Recently resolved ── #}
+  <div class="card">
+    <div class="card-header">
+      <h2>Yakında Çözülenler</h2>
+      <span class="card-header-meta">{{ resolved|length }}</span>
+    </div>
+    {% if resolved %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Target</th>
+            <th scope="col">Rule</th>
+            <th scope="col">Severity</th>
+            <th scope="col">Resolved</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in resolved[:20] %}
+          <tr>
+            <td class="mono text-sm">{{ a.payload.get('hostname', a.target_id[:8]) }}</td>
+            <td class="text-sm text-secondary">{{ a.rule_id }}</td>
+            <td>
+              <span class="status-indicator status-{{ a.severity.value }}">
+                {% if a.severity.value == 'critical' %}<svg><use href="#i-alert"/></svg>{% else %}<svg><use href="#i-info"/></svg>{% endif %}
+                {{ a.severity.value }}
+              </span>
+            </td>
+            <td class="text-sm text-secondary" data-tooltip="{{ a.resolved_at|localtime if a.resolved_at else '' }}">
+              {{ a.resolved_at|localtime('%Y-%m-%d %H:%M') if a.resolved_at else '-' }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding:var(--s-6);">
+      <p class="text-muted">Henüz çözülmüş alert yok.</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var rows = Array.from(document.querySelectorAll('.alerts-tbody .alert-row'));
+
+  // ── Relative time (SINCE) ──
+  rows.forEach(function (row) {
+    var since = row.getAttribute('data-first-seen');
+    var cell = row.querySelector('.since-cell');
+    if (cell && since) {
+      var d = new Date(since);
+      if (!isNaN(d.getTime())) {
+        cell.textContent = window.relativeTime(since);
+        cell.setAttribute('data-tooltip', window.utcString(since));
+      }
+    }
+  });
+
+  // ── Per-table filters (rule + cluster) ──
+  function applyTableFilters(tableId) {
+    var ruleSel = document.querySelector('.alert-filter-rule[data-table="' + tableId + '"]');
+    var clusSel = document.querySelector('.alert-filter-cluster[data-table="' + tableId + '"]');
+    var countEl = document.querySelector('.alert-count[data-table="' + tableId + '"]');
+    var fRule = ruleSel ? ruleSel.value : '';
+    var fClus = clusSel ? clusSel.value : '';
+    var visible = 0;
+    document.querySelectorAll('#' + tableId + ' .alert-row').forEach(function (r) {
+      var ok = true;
+      if (fRule && r.getAttribute('data-rule') !== fRule) ok = false;
+      if (fClus && r.getAttribute('data-cluster') !== fClus) ok = false;
+      r.style.display = ok ? '' : 'none';
+      if (ok) visible++;
+    });
+    if (countEl) countEl.textContent = visible + ' gösteriliyor';
+  }
+
+  document.querySelectorAll('.alert-filter-rule, .alert-filter-cluster').forEach(function (sel) {
+    sel.addEventListener('change', function () {
+      applyTableFilters(sel.getAttribute('data-table'));
+    });
+  });
+
+  // ── Bulk selection across all tables ──
+  function updateBulkBar() {
+    var checked = document.querySelectorAll('.alert-checkbox:checked').length;
+    var bar = document.getElementById('bulk-bar');
+    document.getElementById('bulk-count').textContent = checked + ' seçildi';
+    if (checked > 0) bar.classList.remove('hidden'); else bar.classList.add('hidden');
+  }
+
+  document.querySelectorAll('.alert-select-all').forEach(function (selAll) {
+    selAll.addEventListener('change', function () {
+      var tableId = selAll.getAttribute('data-table');
+      document.querySelectorAll('#' + tableId + ' .alert-checkbox').forEach(function (cb) {
+        cb.checked = selAll.checked;
+      });
+      updateBulkBar();
+    });
+  });
+
+  document.addEventListener('change', function (e) {
+    if (e.target.classList && e.target.classList.contains('alert-checkbox')) updateBulkBar();
+  });
+
+  document.getElementById('bulk-clear').addEventListener('click', function () {
+    document.querySelectorAll('.alert-checkbox').forEach(function (cb) { cb.checked = false; });
+    document.querySelectorAll('.alert-select-all').forEach(function (s) { s.checked = false; });
+    updateBulkBar();
+  });
+
+  // ── Bulk silence ──
+  function submitBulkSilence(minutes) {
+    var fps = Array.from(document.querySelectorAll('.alert-checkbox:checked')).map(function (cb) { return cb.dataset.fingerprint; });
+    if (!fps.length) return;
+    fetch('/api/alerts/bulk-silence', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fingerprints: fps })
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      window.toast(data.modified + ' alert susturuldu', 'success');
+      setTimeout(function () { window.location.reload(); }, 600);
+    })
+    .catch(function () { window.toast('Susturma başarısız', 'error'); });
+  }
+  document.getElementById('bulk-silence-1h').addEventListener('click', function () { submitBulkSilence(60); });
+  document.getElementById('bulk-silence-24h').addEventListener('click', function () { submitBulkSilence(1440); });
+
+  // ── Single silence ──
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-silence-one]');
+    if (btn) {
+      e.preventDefault();
+      var fp = btn.getAttribute('data-silence-one');
+      fetch('/api/alerts/' + fp + '/silence?minutes=60', { method: 'POST' })
+        .then(function (r) { return r.json(); })
+        .then(function () {
+          window.toast('Alert susturuldu (1h)', 'success');
+          setTimeout(function () { window.location.reload(); }, 600);
+        })
+        .catch(function () { window.toast('Susturma başarısız', 'error'); });
+    }
+  });
+})();
+</script>
+{% endblock %}

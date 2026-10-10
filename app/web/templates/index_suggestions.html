@@ -1,0 +1,95 @@
+{# index_suggestions.html — Index Önerileri #}
+{% extends "base.html" %}
+{% block title %}Index Önerileri — MongoHealth{% endblock %}
+{% block content %}
+
+<div class="page">
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">Index Önerileri</h1>
+      <p class="page-subtitle">Slow query snapshot'larından üretilen eksik/yanlış index tespitleri</p>
+    </div>
+    <div class="page-actions">
+      <a href="/api/index-suggestions" class="btn btn-sm btn-ghost" target="_blank">JSON API</a>
+    </div>
+  </div>
+
+  {% if suggestions %}
+  {% for s in suggestions %}
+  <div class="card mt-4" style="border-left:3px solid {{ 'var(--crit)' if s.severity == 'critical' else ('var(--warn)' if s.severity == 'warning' else 'var(--border)') }};">
+    <div class="card-header">
+      <div style="display:flex;align-items:center;gap:var(--s-3);">
+        <span class="badge {{ 'status-critical' if s.severity == 'critical' else ('status-warning' if s.severity == 'warning' else 'badge-neutral') }}">
+          {{ s.severity }}
+        </span>
+        <h2 class="mono">{{ s.ns }}</h2>
+        <span class="card-header-meta">{{ s.occurrences }} görülme · ort {{ s.avg_ms }}ms · max {{ s.millis }}ms</span>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="text-sm" style="margin-bottom:var(--s-3);">{{ s.reason }}</div>
+
+      <div class="text-xs text-muted" style="text-transform:uppercase;letter-spacing:0.06em;">Etkilenen Sunucular</div>
+      <div style="margin:var(--s-1) 0 var(--s-3);">
+        {% for h in s.hostnames %}
+        <span class="badge badge-neutral mono" style="margin-right:4px;">{{ h }}</span>
+        {% endfor %}
+      </div>
+
+      <div class="text-xs text-muted" style="text-transform:uppercase;letter-spacing:0.06em;">Filtre Alanları</div>
+      <div style="margin:var(--s-1) 0 var(--s-3);">
+        {% for f in s.filter_keys %}
+        <span class="badge badge-neutral mono" style="margin-right:4px;">{{ f }}</span>
+        {% endfor %}
+        {% if s.sort %}
+        <span class="text-muted mono text-xs">sort: {{ s.sort }}</span>
+        {% endif %}
+      </div>
+
+      <div class="text-xs text-muted" style="text-transform:uppercase;letter-spacing:0.06em;">Önerilen Index</div>
+      <div class="mono" style="margin:var(--s-1) 0 var(--s-3);">
+        {% for k in s.suggested_keys %}
+        <span class="badge status-ok" style="margin-right:4px;">{{ k.field }}: {{ k.direction }}</span>
+        {% endfor %}
+      </div>
+
+      {% if s.create_index_cmd %}
+      <div class="text-xs text-muted" style="text-transform:uppercase;letter-spacing:0.06em;">createIndex Komutu</div>
+      <div class="code-block" style="position:relative;">
+        <button class="btn btn-sm btn-ghost copy-btn" data-copy="{{ s.create_index_cmd }}" style="position:absolute;top:8px;right:8px;">
+          <svg><use href="#i-copy"/></svg> Kopyala
+        </button>
+        <pre class="mono text-sm" style="margin:0;padding:var(--s-3);">{{ s.create_index_cmd }}</pre>
+      </div>
+      {% else %}
+      <div class="text-sm text-muted">
+        <svg style="width:14px;height:14px;vertical-align:-2px;"><use href="#i-info"/></svg>
+        Otomatik index önerilemedi — filtre alanları tespit edilemedi (muhtemelen aggregate/pipeline). Manuel <code class="mono">explain</code> ile incelenmeli.
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+  {% else %}
+  <div class="empty-state">
+    <div class="empty-icon"><svg><use href="#i-activity"/></svg></div>
+    <h3>Henüz öneri yok</h3>
+    <p>Slow query snapshot'ları biriktikçe index önerileri burada listelenir.</p>
+  </div>
+  {% endif %}
+</div>
+
+<script>
+document.addEventListener('click', function (e) {
+  var btn = e.target.closest('.copy-btn');
+  if (!btn) return;
+  var text = btn.getAttribute('data-copy');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () {
+      window.toast('Komut kopyalandı');
+    });
+  }
+});
+</script>
+
+{% endblock %}

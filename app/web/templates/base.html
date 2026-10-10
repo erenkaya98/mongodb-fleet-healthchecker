@@ -1,0 +1,365 @@
+{# base.html — Tüm sayfaların ortak layout'u #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}MongoHealth{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/htmx.min.js"></script>
+</head>
+<body>
+  {# ── Inline SVG icon sprite (lucide-style) ── #}
+  <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+    <symbol id="i-layout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/>
+    </symbol>
+    <symbol id="i-server" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>
+    </symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+    </symbol>
+    <symbol id="i-history" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l4 2"/>
+    </symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/>
+    </symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+    </symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+    </symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+    </symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>
+    </symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+    </symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="20 6 9 17 4 12"/>
+    </symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+    </symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+    </symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+    </symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+    </symbol>
+    <symbol id="i-bell-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M13.73 21a2 2 0 0 1-3.46 0"/><path d="M18.63 13A17.89 17.89 0 0 1 18 8"/><path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"/><path d="M18 8a6 6 0 0 0-9.33-5"/><line x1="1" y1="1" x2="23" y2="23"/>
+    </symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+    </symbol>
+    <symbol id="i-database" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+    </symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="9 18 15 12 9 6"/>
+    </symbol>
+    <symbol id="i-chevron-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="15 18 9 12 15 6"/>
+    </symbol>
+    <symbol id="i-zap" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+    </symbol>
+    <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+    </symbol>
+  </svg>
+
+  {# ── Polling progress indicator ── #}
+  <div class="poll-progress" id="poll-progress"><div class="bar"></div></div>
+
+  <header class="app-header">
+    <a href="/" class="brand">
+      <span class="brand-logo"></span>
+      <span>Mongo<span class="brand-accent">Health</span></span>
+    </a>
+    <nav class="app-nav" aria-label="Ana menü">
+      <a href="/" class="nav-link {{ 'active' if request.url.path == '/' else '' }}">
+        <svg><use href="#i-layout"/></svg> Dashboard
+      </a>
+      <a href="/targets" class="nav-link {{ 'active' if request.url.path.startswith('/targets') else '' }}">
+        <svg><use href="#i-server"/></svg> Targets
+      </a>
+      <a href="/alerts" class="nav-link {{ 'active' if request.url.path == '/alerts' else '' }}">
+        <svg><use href="#i-bell"/></svg> Alertler
+      </a>
+      <a href="/runs" class="nav-link {{ 'active' if request.url.path.startswith('/runs') else '' }}">
+        <svg><use href="#i-history"/></svg> Çalışmalar
+      </a>
+      <a href="/slow-queries" class="nav-link {{ 'active' if request.url.path == '/slow-queries' else '' }}">
+        <svg><use href="#i-activity"/></svg> Yavaş Sorgular
+      </a>
+      <a href="/index-suggestions" class="nav-link {{ 'active' if request.url.path == '/index-suggestions' else '' }}">
+        <svg><use href="#i-zap"/></svg> Index
+      </a>
+    </nav>
+    <div class="header-right">
+      <a href="/alerts" id="header-alerts" class="header-alerts" aria-label="Aktif alertler" style="display:none;">
+        <span class="pulse pulse-crit"></span><span id="header-alerts-count">0</span> alert
+      </a>
+      <span class="last-updated" id="last-updated" data-tooltip="Son veri yenileme">
+        <span class="pulse"></span><span id="last-updated-text">—</span>
+      </span>
+      <button class="btn btn-sm btn-ghost" id="refresh-btn" aria-label="Refresh data">
+        <svg><use href="#i-refresh"/></svg> Yenile
+      </button>
+      <button class="btn btn-sm btn-primary" hx-post="/api/run-now" hx-target="#toast-area" hx-swap="innerHTML"
+              data-run-now aria-label="Run a health check now">
+        <svg><use href="#i-zap"/></svg> Çalıştır
+      </button>
+    </div>
+  </header>
+
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+
+  <div id="toast-area" class="toast-area" aria-live="polite"></div>
+  <div id="modal-area"></div>
+
+  <script>
+    // ── Common helpers ────────────────────────────────────────
+    (function () {
+      // SVG icon helper
+      window.icon = function (name) {
+        return '<svg aria-hidden="true"><use href="#i-' + name + '"/></svg>';
+      };
+
+      // Toast helper
+      window.toast = function (message, type) {
+        type = type || 'info';
+        var area = document.getElementById('toast-area');
+        var el = document.createElement('div');
+        el.className = 'toast toast-' + type;
+        var iconName = type === 'success' ? 'check' : (type === 'error' ? 'alert' : 'info');
+        el.innerHTML = window.icon(iconName) + '<span>' + message + '</span>' +
+          '<button class="toast-close" aria-label="Dismiss">&times;</button>';
+        el.querySelector('.toast-close').addEventListener('click', function () { el.remove(); });
+        area.appendChild(el);
+        setTimeout(function () { el.remove(); }, 5000);
+      };
+
+      // Relative time helper
+      window.relativeTime = function (isoStr) {
+        if (!isoStr) return '—';
+        var d = new Date(isoStr);
+        if (isNaN(d.getTime())) return isoStr;
+        var diff = (Date.now() - d.getTime()) / 1000;
+        if (diff < 0) diff = 0;
+        if (diff < 60) return 'az önce';
+        if (diff < 3600) return Math.floor(diff / 60) + ' dk önce';
+        if (diff < 86400) return Math.floor(diff / 3600) + ' sa önce';
+        return Math.floor(diff / 86400) + ' gün önce';
+      };
+
+      window.utcString = function (isoStr) {
+        if (!isoStr) return '—';
+        var d = new Date(isoStr);
+        if (isNaN(d.getTime())) return isoStr;
+        try {
+          return d.toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+        } catch (e) {
+          return d.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+        }
+      };
+
+      // Copy to clipboard
+      window.copyText = function (text, btn) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(function () {
+            if (btn) { btn.classList.add('copied'); setTimeout(function(){btn.classList.remove('copied');}, 1200); }
+            window.toast('Kopyalandı', 'success');
+          });
+        } else {
+          // fallback
+          var ta = document.createElement('textarea');
+          ta.value = text; document.body.appendChild(ta); ta.select();
+          try { document.execCommand('copy'); window.toast('Kopyalandı', 'success'); }
+          catch (e) { window.toast('Kopyalama başarısız', 'error'); }
+          document.body.removeChild(ta);
+        }
+      };
+
+      // Refresh button (reload current page)
+      document.getElementById('refresh-btn').addEventListener('click', function () {
+        var p = document.getElementById('poll-progress');
+        if (p) p.classList.add('active');
+        window.location.reload();
+      });
+
+      // Run Now with toast feedback
+      document.addEventListener('htmx:afterRequest', function (evt) {
+        if (evt.target && evt.target.hasAttribute && evt.target.hasAttribute('data-run-now')) {
+          var resp = evt.detail.xhr;
+          try {
+            var data = JSON.parse(resp.responseText);
+            if (data.run_id) window.toast('Health check başlatıldı', 'success');
+          } catch (e) {}
+        }
+      });
+
+      // Polling progress on htmx requests
+      document.addEventListener('htmx:beforeRequest', function () {
+        var p = document.getElementById('poll-progress');
+        if (p) p.classList.add('active');
+      });
+      document.addEventListener('htmx:afterRequest', function () {
+        var p = document.getElementById('poll-progress');
+        if (p) p.classList.remove('active');
+      });
+
+      // Update last-updated timestamp
+      var lu = document.getElementById('last-updated-text');
+      if (lu) {
+        var now = new Date();
+        lu.textContent = now.toTimeString().slice(0, 8);
+      }
+    })();
+
+    // ── Modal helpers ─────────────────────────────────────────
+    window.openModal = function (html) {
+      var content = document.getElementById('modal-content');
+      if (!content) return;
+      content.innerHTML = html;
+      document.getElementById('modal-overlay').classList.add('active');
+    };
+
+    window.closeModal = function () {
+      var overlay = document.getElementById('modal-overlay');
+      if (overlay) overlay.classList.remove('active');
+    };
+
+    // Delegate: [data-open-modal] → fetch partial into modal
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-open-modal]');
+      if (btn) {
+        e.preventDefault();
+        var url = btn.getAttribute('data-open-modal');
+        var overlay = document.getElementById('modal-overlay');
+        var content = document.getElementById('modal-content');
+        if (content) content.innerHTML = '<div class="skeleton-row"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>';
+        if (overlay) overlay.classList.add('active');
+        fetch(url).then(function (r) { return r.text(); }).then(function (html) {
+          if (content) content.innerHTML = html;
+        }).catch(function () {
+          if (content) content.innerHTML = '<div class="modal-body"><div class="error-banner"><svg><use href="#i-alert"/></svg> Form yüklenemedi</div></div>';
+        });
+      }
+    });
+
+    // Close modal on Escape
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { closeModal(); closeConfirm(); }
+    });
+
+    // ── Confirm dialog (delete) ───────────────────────────────
+    var pendingDeleteId = null;
+    window.confirmAction = function () {
+      if (!pendingDeleteId) return;
+      deleteTarget(pendingDeleteId);
+    };
+    window.closeConfirm = function () {
+      document.getElementById('confirm-overlay').classList.remove('active');
+      pendingDeleteId = null;
+    };
+
+    function deleteTarget(id) {
+      fetch('/api/targets/' + id, { method: 'DELETE' })
+        .then(function (r) {
+          if (r.ok) {
+            var row = document.getElementById('target-row-' + id);
+            if (row) row.remove();
+            closeConfirm();
+            window.toast('Target silindi', 'success');
+          } else {
+            closeConfirm();
+            window.toast('Silme başarısız', 'error');
+          }
+        })
+        .catch(function () { closeConfirm(); window.toast('Silme başarısız', 'error'); });
+    }
+
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-delete-target]');
+      if (btn) {
+        e.preventDefault();
+        pendingDeleteId = btn.getAttribute('data-delete-target');
+        var name = btn.getAttribute('data-delete-name');
+        document.getElementById('confirm-title').textContent = 'Delete Target';
+        document.getElementById('confirm-message').innerHTML =
+          '<strong>' + name + '</strong> hedefini silmek istediğinize emin misiniz? ' +
+          'Bu işlem geri alınamaz ve ilgili alert/geçmiş kayıtları da temizlenir.';
+        document.getElementById('confirm-overlay').classList.add('active');
+      }
+    });
+
+    // ── Toggle target (optimistic + rollback) ─────────────────
+    document.addEventListener('change', function (e) {
+      var cb = e.target.closest('input[data-target-toggle]');
+      if (!cb) return;
+      var id = cb.getAttribute('data-target-toggle');
+      var original = cb.checked;
+      // Optimistic: zaten checkbox durumu güncellendi
+      fetch('/api/targets/' + id + '/toggle', { method: 'POST' })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (data && data.enabled !== undefined) {
+            cb.checked = data.enabled;
+            window.toast(data.enabled ? 'Target enabled' : 'Target disabled', 'success');
+          } else {
+            cb.checked = !original; // rollback
+            window.toast('Toggle başarısız', 'error');
+          }
+        })
+        .catch(function () {
+          cb.checked = !original; // rollback
+          window.toast('Toggle başarısız', 'error');
+        });
+    });
+
+    // ── Header alert sayacı ─────────────────────────────────
+    (function () {
+      function updateAlertCount() {
+        fetch('/api/alerts?state=firing')
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            var el = document.getElementById('header-alerts');
+            var countEl = document.getElementById('header-alerts-count');
+            if (!el || !countEl) return;
+            var n = Array.isArray(data) ? data.length : 0;
+            countEl.textContent = n;
+            if (n > 0) { el.style.display = ''; }
+          })
+          .catch(function () { /* sessiz — header rozeti opsiyonel */ });
+      }
+      updateAlertCount();
+      setInterval(updateAlertCount, 30000);
+    })();
+
+    // Dispatch ready event — sayfa script'leri helper'lardan sonra çalışır
+    document.dispatchEvent(new CustomEvent('mh:ready'));
+  </script>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

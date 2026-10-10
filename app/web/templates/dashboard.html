@@ -1,0 +1,198 @@
+{# dashboard.html — Ana dashboard sayfası #}
+{% extends "base.html" %}
+{% block title %}Dashboard — MongoHealth{% endblock %}
+{% block content %}
+
+<div id="dashboard-content">
+  {% include "dashboard_partial.html" %}
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var REFRESH_KEY = 'dash_refresh_interval';
+  var DEFAULT_INTERVAL = '15s';
+  var INTERVAL_MS = { '15s': 15000, '30s': 30000, '1m': 60000, 'off': 0 };
+  var interval = localStorage.getItem(REFRESH_KEY) || DEFAULT_INTERVAL;
+  var pollTimer = null;
+  var countdownTimer = null;
+  var remainingMs = 0;
+  var totalMs = INTERVAL_MS[interval] || 0;
+
+  // ── Seg control sync ──
+  function syncSegButtons() {
+    document.querySelectorAll('.seg-btn').forEach(function (b) {
+      b.classList.toggle('active', b.getAttribute('data-interval') === interval);
+    });
+  }
+
+  // ── Countdown ──
+  function renderCountdown() {
+    var text = document.getElementById('dash-countdown-text');
+    var fill = document.getElementById('dash-countdown-fill');
+    if (!text || !fill) return;
+    if (interval === 'off' || totalMs === 0) {
+      text.textContent = 'oto-yenileme kapalı';
+      fill.style.width = '0%';
+      return;
+    }
+    var pct = 100 - (remainingMs / totalMs) * 100;
+    fill.style.width = pct + '%';
+    var secs = Math.ceil(remainingMs / 1000);
+    text.textContent = secs + 's sonra yenile';
+  }
+
+  function startCountdown() {
+    if (countdownTimer) clearInterval(countdownTimer);
+    if (interval === 'off' || totalMs === 0) {
+      remainingMs = 0;
+      renderCountdown();
+      return;
+    }
+    remainingMs = totalMs;
+    renderCountdown();
+    countdownTimer = setInterval(function () {
+      remainingMs -= 1000;
+      if (remainingMs <= 0) remainingMs = totalMs;
+      renderCountdown();
+    }, 1000);
+  }
+
+  // ── Relative last-run time + duration threshold + staleness ──
+  function renderLastRun() {
+    var line = document.getElementById('last-run-line');
+    if (!line) return;
+    var iso = line.getAttribute('data-last-run');
+    var dur = parseFloat(line.getAttribute('data-duration') || '0');
+    if (!iso) { line.textContent = 'Henüz çalışma yok'; return; }
+    var d = new Date(iso);
+    var diffMs = Date.now() - d.getTime();
+    var rel = window.relativeTime(iso);
+
+    // Duration threshold: <2s normal, 2-5s warn, >5s crit
+    var durHtml = '';
+    if (dur > 0) {
+      var cls = dur < 2000 ? 'dur-ok' : (dur < 5000 ? 'dur-warn' : 'dur-crit');
+      durHtml = ' · <span class="mono ' + cls + '">' + Math.round(dur) + 'ms</span>';
+    }
+
+    // Staleness: interval'in 3 katından bayatsa uyar
+    var stale = false;
+    var staleMs = totalMs > 0 ? totalMs * 3 : 45000;
+    if (diffMs > staleMs) stale = true;
+    var cls = stale ? 'stale' : '';
+
+    line.innerHTML = 'Son çalışma <span class="mono ' + cls + '" data-tooltip="' +
+      window.utcString(iso) + '">' + rel + '</span>' + durHtml;
+  }
+
+  // ── Apply URL ?status= filter (client-side) ──
+  function applyStatusFilter() {
+    var params = new URLSearchParams(window.location.search);
+    var status = params.get('status');
+    document.querySelectorAll('#dashboard-content .summary-card').forEach(function (c) {
+      var f = c.getAttribute('data-filter');
+      if (!status || status === 'all') {
+        c.setAttribute('data-active', f === 'all' ? 'true' : 'false');
+      } else {
+        c.setAttribute('data-active', f === status ? 'true' : 'false');
+      }
+    });
+    document.querySelectorAll('#dashboard-content .dash-target-row').forEach(function (row) {
+      var st = row.getAttribute('data-status');
+      if (!status || status === 'all' || st === status) row.style.display = '';
+      else row.style.display = 'none';
+    });
+  }
+
+  // ── Cluster tooltips (sorunlu host listesi) ──
+  function initClusterTooltips() {
+    document.querySelectorAll('.cluster-card[data-tooltip-hosts]').forEach(function (card) {
+      var hosts = card.getAttribute('data-tooltip-hosts');
+      if (!hosts) return;
+      var items = hosts.split(',').filter(Boolean);
+      if (items.length === 0) return;
+      card.setAttribute('data-tooltip', items.map(function (h) {
+        var parts = h.split('|');
+        return parts[0] + ' (' + parts[1] + ')';
+      }).join('\n'));
+    });
+  }
+
+  // ── Polling ──
+  function startPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+    if (interval === 'off' || totalMs === 0) return;
+    pollTimer = setInterval(refreshDashboard, totalMs);
+  }
+
+  async function refreshDashboard() {
+    var p = document.getElementById('poll-progress');
+    if (p) p.classList.add('active');
+    try {
+      var resp = await fetch('/dashboard/partial');
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      var html = await resp.text();
+      var el = document.getElementById('dashboard-content');
+      el.outerHTML = html;
+      postSwap();
+    } catch (e) {
+      window.toast('Dashboard yenilenemedi', 'error');
+    } finally {
+      if (p) p.classList.remove('active');
+    }
+  }
+
+  function postSwap() {
+    syncSegButtons();
+    applyStatusFilter();
+    renderLastRun();
+    startCountdown();
+    initClusterTooltips();
+  }
+
+  // ── Events (delegation — swap sonrası da çalışır) ──
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.seg-btn');
+    if (btn) {
+      interval = btn.getAttribute('data-interval');
+      localStorage.setItem(REFRESH_KEY, interval);
+      totalMs = INTERVAL_MS[interval] || 0;
+      syncSegButtons();
+      startPolling();
+      startCountdown();
+      renderLastRun();
+    }
+  });
+
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('#dash-run-now');
+    if (btn && !btn.disabled) {
+      btn.disabled = true;
+      fetch('/api/run-now', { method: 'POST' })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (data.run_id) window.toast('Health check başlatıldı', 'success');
+          else window.toast('Çalışma başlatılamadı', 'error');
+        })
+        .catch(function () { window.toast('Çalışma başarısız', 'error'); })
+        .finally(function () { btn.disabled = false; });
+    }
+  });
+
+  // ── Live relative time (her saniye) ──
+  setInterval(function () { renderLastRun(); }, 1000);
+
+  // ── Init ──
+  syncSegButtons();
+  applyStatusFilter();
+  renderLastRun();
+  startCountdown();
+  startPolling();
+  initClusterTooltips();
+})();
+</script>
+{% endblock %}

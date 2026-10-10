@@ -1,0 +1,100 @@
+{# run_detail.html — Run detay sayfası #}
+{% extends "base.html" %}
+{% block title %}Run {{ run.run_id[:12] }} — MongoHealth{% endblock %}
+{% block content %}
+
+<div class="page">
+  <div class="page-header">
+    <div>
+      <div style="display:flex;align-items:center;gap:var(--s-2);">
+        <a href="/runs" class="btn btn-sm btn-ghost" aria-label="Back to runs">
+          <svg><use href="#i-chevron-left"/></svg> Runs
+        </a>
+        <h1 class="page-title" style="margin-left:var(--s-1);">Çalışma Detayı</h1>
+      </div>
+      <p class="page-subtitle">
+        <button class="copy-btn" onclick="window.copyText('{{ run.run_id }}', this)">
+          <span class="mono">{{ run.run_id }}</span> <svg><use href="#i-copy"/></svg>
+        </button>
+      </p>
+    </div>
+    <div class="page-actions">
+      {% if run.triggered_by == 'manual' %}
+      <span class="badge badge-neutral"><svg style="width:11px;height:11px;"><use href="#i-zap"/></svg> manuel</span>
+      {% else %}
+      <span class="badge badge-neutral"><svg style="width:11px;height:11px;"><use href="#i-clock"/></svg> planlı</span>
+      {% endif %}
+    </div>
+  </div>
+
+  {# ── Run summary ── #}
+  <div class="card">
+    <div class="card-body">
+      <div class="summary-row">
+        <div class="summary-card total"><div class="count">{{ run.target_count }}</div><div class="label">Targets</div></div>
+        <div class="summary-card ok"><div class="count">{{ run.ok }}</div><div class="label">OK</div></div>
+        <div class="summary-card warning"><div class="count">{{ run.warning }}</div><div class="label">Uyarı</div></div>
+        <div class="summary-card critical"><div class="count">{{ run.critical }}</div><div class="label">Kritik</div></div>
+        <div class="summary-card unknown"><div class="count">{{ run.unknown }}</div><div class="label">Bilinmiyor</div></div>
+      </div>
+      <div class="text-sm text-muted mt-3">
+        Başlangıç <span class="mono">{{ run.started_at|localtime if run.started_at else '-' }}</span>
+        · Süre <span class="mono">{{ '%.0f' % run.duration_ms }}ms</span>
+        {% if run.finished_at %} · Bitiş <span class="mono">{{ run.finished_at|localtime }}</span>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# ── Target results ── #}
+  <div class="card mt-4">
+    <div class="card-header">
+      <h2>Target Sonuçları</h2>
+      <span class="card-header-meta">{{ results|length }} target</span>
+    </div>
+    {% if results %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Target</th>
+            <th scope="col">Durum</th>
+            <th scope="col">Gecikme</th>
+            <th scope="col">Hata</th>
+            <th scope="col">Kontroller</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in results %}
+          <tr class="row-clickable" onclick="window.location='/targets/{{ r.target_id }}'">
+            <td class="mono text-sm">{{ r.target_id[:12] }}</td>
+            <td>
+              <span class="status-indicator status-{{ r.status.value }}">
+                {% if r.status.value == 'critical' %}<svg><use href="#i-alert"/></svg>{% elif r.status.value == 'ok' %}<svg><use href="#i-check"/></svg>{% else %}<svg><use href="#i-info"/></svg>{% endif %}
+                <span class="dot dot-{{ r.status.value }}"></span> {{ r.status.value }}
+              </span>
+            </td>
+            <td class="mono text-sm">{{ '%.0f' % r.latency_ms }}ms</td>
+            <td class="text-sm text-muted">{{ r.error or '-' }}</td>
+            <td>
+              {% for c in r.checks %}
+              <span class="badge status-{{ c.status.value }}" style="margin-right:4px;"
+                    data-tooltip="{{ c.message }}">
+                {{ c.rule_id }}
+              </span>
+              {% endfor %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <div class="empty-icon"><svg><use href="#i-history"/></svg></div>
+      <h3>Bu çalışma için sonuç yok</h3>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

@@ -1,0 +1,80 @@
+{# bulk_form.html — Toplu import (modal içinde) #}
+<div class="modal-header">
+  <h3>Toplu Sunucu İçe Aktar</h3>
+  <button class="btn-icon" onclick="closeModal()" aria-label="Kapat"><svg><use href="#i-x"/></svg></button>
+</div>
+
+<div class="modal-body">
+  <p class="text-sm text-muted" style="margin-bottom:var(--s-3);">
+    CSV veya JSON yapıştırın. CSV sütunları: <code class="mono">ip,port,mongo_port,hostname,cluster,role,env</code>
+  </p>
+  <div class="form-group">
+    <label for="bulk-format">Format</label>
+    <select id="bulk-format">
+      <option value="json">JSON</option>
+      <option value="csv">CSV</option>
+    </select>
+  </div>
+  <div class="form-group">
+    <label for="bulk-data">Veri</label>
+    <textarea id="bulk-data" rows="10" class="mono"
+      placeholder='[{"ip":"10.0.1.1","hostname":"db01","cluster":"prod"}]'></textarea>
+  </div>
+  <div id="bulk-result" style="margin-top:var(--s-3);"></div>
+</div>
+<div class="modal-footer">
+  <button type="button" class="btn btn-sm" onclick="closeModal()">İptal</button>
+  <button type="button" class="btn btn-primary btn-sm" id="bulk-submit">
+    <svg><use href="#i-upload"/></svg> İçe Aktar
+  </button>
+</div>
+
+<script>
+(function () {
+  var fmt = document.getElementById('bulk-format');
+  var ta = document.getElementById('bulk-data');
+  function updatePlaceholder() {
+    if (fmt.value === 'csv') {
+      ta.placeholder = 'ip,port,mongo_port,hostname,cluster,role,env\n10.0.1.1,9216,27017,db01,prod,default,production';
+    } else {
+      ta.placeholder = '[{"ip":"10.0.1.1","port":9216,"hostname":"db01","cluster":"prod"}]';
+    }
+  }
+  fmt.addEventListener('change', updatePlaceholder);
+  updatePlaceholder();
+
+  document.getElementById('bulk-submit').addEventListener('click', function () {
+    var data = ta.value;
+    if (!data.trim()) {
+      window.toast('Veri alanı boş', 'error');
+      return;
+    }
+    var ct = fmt.value === 'csv' ? 'text/csv' : 'application/json';
+    var resultEl = document.getElementById('bulk-result');
+    resultEl.innerHTML = '<div class="skeleton-row"><div class="skeleton"></div></div>';
+
+    fetch('/api/targets/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': ct },
+      body: data
+    })
+    .then(function (r) {
+      if (!r.ok) return r.json().then(function (j) { throw new Error(j.detail || 'Import failed'); });
+      return r.json();
+    })
+    .then(function (result) {
+      resultEl.innerHTML =
+        '<div class="error-banner" style="border-color:var(--ok-border);background:var(--ok-bg);color:var(--ok);">' +
+        '<svg><use href="#i-check"/></svg> ' +
+        'Eklenen: ' + result.inserted + ' · Atlanan: ' + result.skipped + ' · Hata: ' + result.errors +
+        '</div>';
+      if (result.inserted > 0) {
+        setTimeout(function () { closeModal(); window.location.reload(); }, 1200);
+      }
+    })
+    .catch(function (err) {
+      resultEl.innerHTML = '<div class="error-banner"><svg><use href="#i-alert"/></svg> ' + (err.message || 'Import failed') + '</div>';
+    });
+  });
+})();
+</script>
