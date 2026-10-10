@@ -1,22 +1,25 @@
 # Scheduler - 5-minute loop, leader lock, graceful shutdown
 # ========================================================
 # APScheduler AsyncIOScheduler + CronTrigger
-# Meta DB'de leader lock: findOneAndUpdate upsert + TTL index
-# Lock alamayan instance turu atlar.
+# Leader lock in the metadata DB: an atomic conditional upsert guarded by the
+# unique index on locks.name, renewed by a heartbeat for the duration of a run.
+# An instance that cannot take the lock skips the cycle.
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import signal
 import socket
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from pymongo.errors import DuplicateKeyError
 
 from app.alerting import process_check_result, send_alert_storm_batch
 from app.collector import DirectCollector, MetricsCollector
@@ -141,37 +144,75 @@ class SchedulerService:
         return _running_task is not None and not _running_task.done()
 
     async def _acquire_lock(self) -> bool:
-        """Meta DB'de leader lock al. Atomik findOneAndUpdate upsert."""
+        """Acquire the leader lock atomically, in a single round trip.
+
+        The filter only matches when the lock has expired or is already ours, so
+        a live holder is never displaced. When it matches nothing the upsert
+        tries to insert a second document named "scheduler_leader"; the unique
+        index on locks.name rejects that, and the resulting DuplicateKeyError is
+        the "somebody else holds it" signal.
+
+        expires_at is stored as a BSON Date so the TTL index on the collection
+        actually reaps it. (A float timestamp is silently ignored by TTL.)
+        Legacy float values sort before dates in BSON, so they match the
+        $lte filter and are taken over on the first run after an upgrade.
+        """
         db = get_db()
         now = _now()
-        expires_at = now.timestamp() + settings.scheduler_lock_ttl
+        expires_at = now + timedelta(seconds=settings.scheduler_lock_ttl)
 
         try:
-            await db.locks.find_one_and_update(
-                {"name": "scheduler_leader"},
+            await db.locks.update_one(
+                {
+                    "name": "scheduler_leader",
+                    "$or": [
+                        {"expires_at": {"$lte": now}},
+                        {"instance_id": INSTANCE_ID},
+                    ],
+                },
                 {
                     "$set": {
                         "instance_id": INSTANCE_ID,
                         "acquired_at": now,
                         "expires_at": expires_at,
-                    },
-                    "$setOnInsert": {"name": "scheduler_leader"},
+                    }
                 },
                 upsert=True,
-                # Only take it when the lock has expired or does not exist
-                # filter: either absent, or expires_at < now
             )
-            # findOneAndUpdate with upsert always returns a document.
-            # When the lock is held elsewhere we must check expires_at.
-            # Simplified approach: always attempt to take it, then verify
-            # the returned instance_id.
-            doc = await db.locks.find_one({"name": "scheduler_leader"})
-            if doc and doc.get("instance_id") == INSTANCE_ID:
-                return True
+            return True
+        except DuplicateKeyError:
+            logger.debug("Leader lock is held by another instance")
             return False
         except Exception as e:
             logger.error("Failed to acquire lock: %s", e)
             return False
+
+    async def _renew_lock(self) -> bool:
+        """Extend our own lock. Returns False when we no longer hold it."""
+        db = get_db()
+        now = _now()
+        try:
+            result = await db.locks.update_one(
+                {"name": "scheduler_leader", "instance_id": INSTANCE_ID},
+                {"$set": {"expires_at": now + timedelta(seconds=settings.scheduler_lock_ttl)}},
+            )
+            return result.matched_count == 1
+        except Exception as e:
+            logger.error("Failed to renew lock: %s", e)
+            return False
+
+    async def _lock_heartbeat(self) -> None:
+        """Renew the lock while a run is in flight.
+
+        Without this a run slower than scheduler_lock_ttl would let another
+        instance take the lock and start a second, overlapping cycle.
+        """
+        interval = max(5, settings.scheduler_lock_ttl // 3)
+        while True:
+            await asyncio.sleep(interval)
+            if not await self._renew_lock():
+                logger.warning("Lost the leader lock mid-run; another instance may have taken it")
+                return
 
     async def _release_lock(self) -> None:
         """Release the leader lock."""
@@ -190,7 +231,7 @@ class SchedulerService:
         """Run a single health check cycle.
 
         Steps:
-        1. Leader lock al
+        1. Acquire the leader lock
         2. Read enabled targets
         3. Hepsini scrape et
         4. Evaluate with the rule engine
@@ -203,6 +244,7 @@ class SchedulerService:
             logger.debug("Leader lock not acquired, skipping this run")
             return None
 
+        heartbeat = asyncio.create_task(self._lock_heartbeat())
         run: RunSummary | None = None
         try:
             assert self._exporter_collector is not None
@@ -355,6 +397,9 @@ class SchedulerService:
             return run.run_id if run else None
 
         finally:
+            heartbeat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat
             await self._release_lock()
 
     async def _process_alerts(
