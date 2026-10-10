@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from aiohttp import web
 
 from app.collector import MetricsCollector
+from app.config import settings
 from app.models import TargetInDB
 
 # ── Fake exporter server ────────────────────────────────────────
@@ -27,7 +30,7 @@ mongodb_ss_uptime 360000
 
 
 async def metrics_handler(request: web.Request) -> web.Response:
-    """Sahte /metrics endpoint'i."""
+    """Fake /metrics endpoint."""
     # For the slow-endpoint test
     delay = request.query.get("delay")
     if delay:
@@ -47,7 +50,7 @@ async def not_found_handler(request: web.Request) -> web.Response:
 
 @pytest.fixture
 async def exporter_server():
-    """Sahte exporter sunucusu."""
+    """Fake exporter server."""
     app = web.Application()
     app.router.add_get("/metrics", metrics_handler)
     app.router.add_get("/error", error_handler)
@@ -371,15 +374,31 @@ class TestDirectCollector:
     @pytest.mark.asyncio
     async def test_replset_status_metrics(self, direct_collector, monkeypatch):
         """replSetGetStatus -> replset metrics must be emitted correctly."""
+        primary_optime = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
         admin = MockAdmin(
             server_status={"ok": 1, "connections": {}},
             replset_status={
                 "ok": 1,
                 "myState": 1,
                 "members": [
-                    {"name": "node1:27017", "health": 1, "secondaryDelaySecs": 0},
-                    {"name": "node2:27017", "health": 1, "secondaryDelaySecs": 2},
-                    {"name": "node3:27017", "health": 0, "secondaryDelaySecs": 0},
+                    {
+                        "name": "node1:27017",
+                        "health": 1,
+                        "stateStr": "PRIMARY",
+                        "optimeDate": primary_optime,
+                    },
+                    {
+                        "name": "node2:27017",
+                        "health": 1,
+                        "stateStr": "SECONDARY",
+                        "optimeDate": primary_optime - timedelta(seconds=45),
+                    },
+                    {
+                        "name": "node3:27017",
+                        "health": 0,
+                        "stateStr": "(not reachable/healthy)",
+                        "optimeDate": primary_optime - timedelta(seconds=300),
+                    },
                 ],
             },
         )
@@ -409,13 +428,96 @@ class TestDirectCollector:
         assert health_by_member["node2:27017"] == 1.0
         assert health_by_member["node3:27017"] == 0.0
 
-        # replication lag
+        # Replication lag = primary optime - member optime.
+        # Regression guard: the first implementation read secondaryDelaySecs,
+        # which is the configured delay of a delayed secondary and is absent on
+        # ordinary members, so every node reported a lag of 0 and the
+        # replication_lag rule could never fire.
         lag_samples = [
             s for s in result.samples if s.name == "mongodb_mongod_replset_member_replication_lag"
         ]
         assert len(lag_samples) == 3
         lag_by_member = {s.labels["member"]: s.value for s in lag_samples}
-        assert lag_by_member["node2:27017"] == 2.0
+        assert lag_by_member["node1:27017"] == 0.0, "the primary cannot lag behind itself"
+        assert lag_by_member["node2:27017"] == 45.0
+        assert lag_by_member["node3:27017"] == 300.0
+
+    @pytest.mark.asyncio
+    async def test_replication_lag_omitted_without_a_primary(self, direct_collector, monkeypatch):
+        """During an election there is no primary to measure against.
+
+        Emitting 0 then would read as "perfectly in sync" at exactly the moment
+        the replica set is least healthy. No sample at all leaves the rule
+        UNKNOWN, which is the honest answer.
+        """
+        now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+        admin = MockAdmin(
+            server_status={"ok": 1, "connections": {}},
+            replset_status={
+                "ok": 1,
+                "myState": 2,
+                "members": [
+                    {
+                        "name": "node1:27017",
+                        "health": 1,
+                        "stateStr": "SECONDARY",
+                        "optimeDate": now,
+                    },
+                    {
+                        "name": "node2:27017",
+                        "health": 1,
+                        "stateStr": "SECONDARY",
+                        "optimeDate": now,
+                    },
+                ],
+            },
+        )
+        mock_client = MockClient(admin=admin)
+        monkeypatch.setattr(direct_collector, "_get_client", lambda t: mock_client)
+
+        target = TargetInDB(ip="127.0.0.1", mongo_uri="mongodb://localhost:27017", enabled=True)
+        result = await direct_collector.scrape_target(target)
+
+        lag_samples = [
+            s for s in result.samples if s.name == "mongodb_mongod_replset_member_replication_lag"
+        ]
+        assert lag_samples == []
+        # health must still be reported
+        health = [s for s in result.samples if s.name == "mongodb_mongod_replset_member_health"]
+        assert len(health) == 2
+
+    @pytest.mark.asyncio
+    async def test_replication_lag_never_negative(self, direct_collector, monkeypatch):
+        """A secondary can report an optime slightly ahead of the primary snapshot."""
+        now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+        admin = MockAdmin(
+            server_status={"ok": 1, "connections": {}},
+            replset_status={
+                "ok": 1,
+                "myState": 1,
+                "members": [
+                    {"name": "p:27017", "health": 1, "stateStr": "PRIMARY", "optimeDate": now},
+                    {
+                        "name": "s:27017",
+                        "health": 1,
+                        "stateStr": "SECONDARY",
+                        "optimeDate": now + timedelta(milliseconds=200),
+                    },
+                ],
+            },
+        )
+        mock_client = MockClient(admin=admin)
+        monkeypatch.setattr(direct_collector, "_get_client", lambda t: mock_client)
+
+        target = TargetInDB(ip="127.0.0.1", mongo_uri="mongodb://localhost:27017", enabled=True)
+        result = await direct_collector.scrape_target(target)
+
+        lags = {
+            s.labels["member"]: s.value
+            for s in result.samples
+            if s.name == "mongodb_mongod_replset_member_replication_lag"
+        }
+        assert lags["s:27017"] == 0.0
 
     @pytest.mark.asyncio
     async def test_ping_failure_returns_error(self, direct_collector, monkeypatch):
@@ -532,7 +634,7 @@ class TestDirectCollectorWiredTiger:
         assert "mongodb_wt_read_tickets_available" in names
         assert "mongodb_wt_write_tickets_available" in names
         assert "mongodb_wt_checkpoint_max_ms" in names
-        assert "mongodb_wt_eviction_ratio" in names
+        assert "mongodb_wt_cache_write_read_ratio" in names
 
         # Value assertions
         used = next(s for s in result.samples if s.name == "mongodb_wt_cache_used_percent")
@@ -608,7 +710,7 @@ class TestDirectCollectorVersion:
     async def test_build_info_version(self, direct_collector, monkeypatch):
         """buildInfo -> mongodb_mongod_version must be emitted."""
         admin = MockAdmin(server_status={"ok": 1, "connections": {}})
-        # buildInfo command handler ekle
+        # add a buildInfo command handler
         orig_command = admin.command
 
         async def command_with_buildinfo(cmd, *args, **kwargs):
@@ -656,7 +758,7 @@ class TestDirectCollectorSecurity:
 
     @pytest.mark.asyncio
     async def test_security_opts(self, direct_collector, monkeypatch):
-        """getCmdLineOpts → authorization + bindIp + TLS metrikleri."""
+        """getCmdLineOpts -> authorization, bindIp and TLS metrics."""
         admin = MockAdmin(server_status={"ok": 1, "connections": {}})
         orig_command = admin.command
 
@@ -694,7 +796,7 @@ class TestDirectCollectorSecurity:
 
     @pytest.mark.asyncio
     async def test_security_auth_disabled(self, direct_collector, monkeypatch):
-        """authorization: disabled → 0.0."""
+        """authorization: disabled -> 0.0."""
         admin = MockAdmin(server_status={"ok": 1, "connections": {}})
         orig_command = admin.command
 
@@ -723,3 +825,153 @@ class TestDirectCollectorSecurity:
 
         bindip = next(s for s in result.samples if s.name == "mongodb_net_bindip_public")
         assert bindip.value == 1.0  # 0.0.0.0 = public
+
+    @staticmethod
+    def _opts_admin(parsed: dict):
+        """MockAdmin whose getCmdLineOpts returns the given `parsed` document."""
+        admin = MockAdmin(server_status={"ok": 1, "connections": {}})
+        orig_command = admin.command
+
+        async def command_with_opts(cmd, *args, **kwargs):
+            cmd_str = str(cmd).lower() if isinstance(cmd, str) else ""
+            if "getcmdlineopts" in cmd_str:
+                return {"ok": 1, "parsed": parsed}
+            return await orig_command(cmd, *args, **kwargs)
+
+        admin.command = command_with_opts
+        return admin
+
+    @pytest.mark.asyncio
+    async def test_authorization_absent_emits_no_sample(self, direct_collector, monkeypatch):
+        """Regression: a missing security.authorization is not "disabled".
+
+        The first implementation defaulted the missing key to "disabled", which
+        reported auth as off on correctly secured clusters and -- combined with a
+        public bindIp -- produced a CRITICAL. Emitting nothing leaves the rule
+        UNKNOWN instead of raising a false alarm.
+        """
+        admin = self._opts_admin({"net": {"bindIp": "0.0.0.0"}})
+        monkeypatch.setattr(direct_collector, "_get_client", lambda t: MockClient(admin=admin))
+
+        target = TargetInDB(ip="127.0.0.1", mongo_uri="mongodb://localhost:27017", enabled=True)
+        result = await direct_collector.scrape_target(target)
+
+        auth = [s for s in result.samples if s.name == "mongodb_security_authorization_enabled"]
+        assert auth == [], "no authorization sample should be emitted when it is not reported"
+        # bindIp is still reported
+        bindip = next(s for s in result.samples if s.name == "mongodb_net_bindip_public")
+        assert bindip.value == 1.0
+
+    @pytest.mark.asyncio
+    async def test_keyfile_implies_authorization_enabled(self, direct_collector, monkeypatch):
+        """keyFile deployments enable authorization implicitly."""
+        admin = self._opts_admin(
+            {"security": {"keyFile": "/etc/mongo/keyfile"}, "net": {"bindIp": "0.0.0.0"}}
+        )
+        monkeypatch.setattr(direct_collector, "_get_client", lambda t: MockClient(admin=admin))
+
+        target = TargetInDB(ip="127.0.0.1", mongo_uri="mongodb://localhost:27017", enabled=True)
+        result = await direct_collector.scrape_target(target)
+
+        auth = next(s for s in result.samples if s.name == "mongodb_security_authorization_enabled")
+        assert auth.value == 1.0
+
+    @pytest.mark.asyncio
+    async def test_cluster_auth_mode_implies_authorization_enabled(
+        self, direct_collector, monkeypatch
+    ):
+        admin = self._opts_admin(
+            {"security": {"clusterAuthMode": "x509"}, "net": {"bindIp": "127.0.0.1"}}
+        )
+        monkeypatch.setattr(direct_collector, "_get_client", lambda t: MockClient(admin=admin))
+
+        target = TargetInDB(ip="127.0.0.1", mongo_uri="mongodb://localhost:27017", enabled=True)
+        result = await direct_collector.scrape_target(target)
+
+        auth = next(s for s in result.samples if s.name == "mongodb_security_authorization_enabled")
+        assert auth.value == 1.0
+
+
+class TestSlowQueryRedaction:
+    """Slow-query values must not leave the monitored database by default.
+
+    Filter values come straight out of production queries and can carry personal
+    data; they end up in the metadata database and on the dashboard. Index
+    suggestions are built from field names, so the values are not needed.
+    """
+
+    def test_values_are_replaced_with_type_placeholders(self):
+        from app.collector import _redact_values
+
+        redacted = _redact_values(
+            {
+                "find": "subscribers",
+                "filter": {
+                    "msisdn": "905551234567",
+                    "age": {"$gt": 30},
+                    "active": True,
+                    "$or": [{"email": "a@b.com"}, {"customerId": 12345678901}],
+                },
+            }
+        )
+
+        assert redacted["filter"]["msisdn"] == "<str>"
+        assert redacted["filter"]["age"]["$gt"] == "<int>"
+        assert redacted["filter"]["active"] == "<bool>"
+        assert redacted["filter"]["$or"][0]["email"] == "<str>"
+        assert redacted["filter"]["$or"][1]["customerId"] == "<int>"
+
+        # no original value survives anywhere in the output
+        blob = json.dumps(redacted)
+        for secret in ("905551234567", "a@b.com", "12345678901"):
+            assert secret not in blob
+
+    def test_query_shape_survives_redaction(self):
+        """Field names, collection, sort direction and limit stay readable."""
+        from app.collector import _redact_values
+
+        redacted = _redact_values(
+            {
+                "find": "subscribers",
+                "filter": {"msisdn": "905551234567"},
+                "sort": {"createdAt": -1, "name": 1},
+                "projection": {"_id": 0, "msisdn": 1},
+                "limit": 20,
+            }
+        )
+
+        assert redacted["find"] == "subscribers"
+        assert "msisdn" in redacted["filter"]
+        assert redacted["sort"] == {"createdAt": -1, "name": 1}
+        assert redacted["projection"] == {"_id": 0, "msisdn": 1}
+        assert redacted["limit"] == 20
+
+    def test_detail_extraction_redacts_by_default(self, monkeypatch):
+        from app.collector import DirectCollector
+
+        monkeypatch.setattr(settings, "slow_query_store_values", False)
+        detail = DirectCollector()._extract_slow_query_detail(
+            "shop",
+            {
+                "ns": "shop.orders",
+                "millis": 1500,
+                "command": {"find": "orders", "filter": {"email": "user@example.com"}},
+            },
+        )
+        assert "user@example.com" not in json.dumps(detail["command"])
+        # field names are still extracted for the index suggester
+        assert "email" in detail["filter_keys"]
+
+    def test_detail_extraction_keeps_values_when_opted_in(self, monkeypatch):
+        from app.collector import DirectCollector
+
+        monkeypatch.setattr(settings, "slow_query_store_values", True)
+        detail = DirectCollector()._extract_slow_query_detail(
+            "shop",
+            {
+                "ns": "shop.orders",
+                "millis": 1500,
+                "command": {"find": "orders", "filter": {"email": "user@example.com"}},
+            },
+        )
+        assert "user@example.com" in json.dumps(detail["command"])

@@ -32,8 +32,66 @@ def _is_field(name) -> bool:
     return isinstance(name, str) and not name.startswith("$")
 
 
+# Keys whose values describe the query *shape* rather than the data, so they are
+# kept verbatim: a sort direction or a projection flag says nothing about a user,
+# and both matter when reading an index suggestion.
+_SHAPE_KEYS = frozenset({"sort", "projection", "hint"})
+_NAME_KEYS = frozenset(
+    {
+        "find",
+        "aggregate",
+        "count",
+        "distinct",
+        "findAndModify",
+        "update",
+        "delete",
+        "collection",
+        "$db",
+        "key",
+    }
+)
+_COUNT_KEYS = frozenset({"limit", "skip", "batchSize"})
+
+
+def _redact_values(value, _key: str | None = None):
+    """Replace literal values with a type placeholder, keeping the shape intact.
+
+    {"userId": "5551234567", "age": {"$gt": 30}}
+      -> {"userId": "<str>",  "age": {"$gt": "<int>"}}
+
+    Field names, operators, collection names, sort directions and limits all
+    survive, so the result is still enough to spot a missing index -- without
+    copying production data into the metadata database.
+    """
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if k in _SHAPE_KEYS and isinstance(v, dict):
+                out[k] = v  # sort/projection/hint: directions and flags only
+            else:
+                out[k] = _redact_values(v, k)
+        return out
+    if isinstance(value, list):
+        return [_redact_values(v, _key) for v in value]
+    if _key in _NAME_KEYS and isinstance(value, str):
+        return value
+    if _key in _COUNT_KEYS and isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "<bool>"
+    if isinstance(value, int):
+        return "<int>"
+    if isinstance(value, float):
+        return "<float>"
+    if isinstance(value, str):
+        return "<str>"
+    return "<value>"
+
+
 class MetricsCollector:
-    """mongodb_exporter /metrics endpoint'lerinden concurrent metrik toplar."""
+    """Scrapes mongodb_exporter /metrics endpoints concurrently."""
 
     def __init__(self) -> None:
         self._session: ClientSession | None = None
@@ -113,8 +171,8 @@ class MetricsCollector:
 
                         if http_status == 200:
                             samples = parse_prometheus(text)
-                            logger.info(
-                                "Scrape OK: %s (%s) → %d samples, %.0fms",
+                            logger.debug(
+                                "Scrape OK: %s (%s) -> %d samples, %.0fms",
                                 target.hostname or target.ip,
                                 url,
                                 len(samples),
@@ -211,7 +269,7 @@ class MetricsCollector:
         output: list[ScrapeResult] = []
         for i, result in enumerate(results):
             if isinstance(result, Exception):
-                # Beklenmeyen exception → UNKNOWN sonucu
+                # Unexpected exception -> record it as a failed scrape
                 target = targets[i]
                 output.append(
                     ScrapeResult(
@@ -253,11 +311,13 @@ class DirectCollector:
         """Close every connection."""
         from motor.motor_asyncio import AsyncIOMotorClient
 
+        closed = 0
         for _target_id, client in list(self._clients.items()):
             if isinstance(client, AsyncIOMotorClient):
                 client.close()
+                closed += 1
         self._clients.clear()
-        logger.info("DirectCollector stopped, %d connections closed", len(self._clients))
+        logger.info("DirectCollector stopped, %d connections closed", closed)
 
     def _get_client(self, target: TargetInDB) -> object:
         """Create or return the motor client for a target."""
@@ -279,7 +339,7 @@ class DirectCollector:
         return Sample(name=name, labels=labels or {}, value=value)
 
     async def _collect_server_status(self, client: object) -> list[Sample]:
-        """serverStatus → connections, asserts, cursors."""
+        """serverStatus -> connections, asserts, cursors, memory, WiredTiger."""
         try:
             doc = await client.admin.command("serverStatus", check=False)
         except Exception as e:
@@ -407,21 +467,24 @@ class DirectCollector:
                     )
                 )
 
-            # Eviction pressure: read into cache vs evicted
+            # Cache write/read ratio. Named for what it actually measures:
+            # "bytes written from cache" is what WiredTiger flushed to disk, not
+            # what it evicted. True eviction counters are the "... pages evicted"
+            # fields; this ratio is only a rough write-pressure signal.
             bytes_read = cache.get("bytes read into cache", 0)
-            bytes_evicted = cache.get("bytes written from cache", 0)
+            bytes_written = cache.get("bytes written from cache", 0)
             if bytes_read:
                 samples.append(
                     self._make_sample(
-                        "mongodb_wt_eviction_ratio",
-                        round(bytes_evicted / bytes_read, 4),
+                        "mongodb_wt_cache_write_read_ratio",
+                        round(bytes_written / bytes_read, 4),
                     )
                 )
 
         return samples
 
     async def _collect_replset_status(self, client: object) -> list[Sample]:
-        """replSetGetStatus → replset metrikleri."""
+        """replSetGetStatus -> replica set state, member health and replication lag."""
         try:
             doc = await client.admin.command("replSetGetStatus", check=False)
         except Exception as e:
@@ -451,6 +514,16 @@ class DirectCollector:
             )
         )
 
+        # Replication lag is the primary's optime minus the member's optime.
+        # (Not secondaryDelaySecs -- that is the *configured* delay of a delayed
+        # secondary and is absent on ordinary members, so reading it would report
+        # a lag of 0 for every node and the replication_lag rule would never fire.)
+        primary_optime = None
+        for member in members:
+            if member.get("stateStr") == "PRIMARY" or member.get("state") == 1:
+                primary_optime = member.get("optimeDate")
+                break
+
         # Per-member health + lag
         for member in members:
             member_name = member.get("name", "unknown")
@@ -462,14 +535,22 @@ class DirectCollector:
                     labels,
                 )
             )
-            # replication lag: secondary'larda olur
-            lag = member.get("secondaryDelaySecs", 0)
-            if lag is None:
-                lag = 0
+
+            # No primary (election in progress) or no optime from this member:
+            # emit nothing so the rule stays UNKNOWN rather than reporting 0.
+            member_optime = member.get("optimeDate")
+            if primary_optime is None or member_optime is None:
+                continue
+            try:
+                lag = (primary_optime - member_optime).total_seconds()
+            except (TypeError, AttributeError):
+                continue
             samples.append(
                 self._make_sample(
                     "mongodb_mongod_replset_member_replication_lag",
-                    float(lag),
+                    # Clamp: a secondary can report an optime marginally ahead of
+                    # the primary's snapshot, which would otherwise go negative.
+                    float(max(lag, 0.0)),
                     labels,
                 )
             )
@@ -477,7 +558,7 @@ class DirectCollector:
         return samples
 
     async def _collect_oplog_window(self, client: object) -> list[Sample]:
-        """Oplog head/tail timestamp → oplog penceresi."""
+        """Oplog head/tail timestamps, used to derive the oplog window."""
         try:
             local_db = client["local"]
             oplog = local_db["oplog.rs"]
@@ -592,7 +673,7 @@ class DirectCollector:
         return samples
 
     async def _collect_build_info(self, client: object) -> list[Sample]:
-        """buildInfo → mongod versiyonu (read-only)."""
+        """buildInfo -> mongod version (read-only)."""
         try:
             bi = await client.admin.command("buildInfo", check=False)
         except Exception as e:
@@ -613,11 +694,11 @@ class DirectCollector:
                     )
                 )
             except (ValueError, IndexError):
-                logger.debug("Versiyon parse edilemedi: %s", version_str)
+                logger.debug("Could not parse version: %s", version_str)
         return samples
 
     async def _collect_fcv(self, client: object) -> list[Sample]:
-        """featureCompatibilityVersion (read-only, clusterMonitor yeterli)."""
+        """featureCompatibilityVersion (read-only, clusterMonitor is enough)."""
         try:
             doc = await client.admin.command(
                 {"getParameter": 1, "featureCompatibilityVersion": 1},
@@ -641,7 +722,7 @@ class DirectCollector:
                     )
                 )
             except (ValueError, IndexError):
-                logger.debug("FCV parse edilemedi: %s", version_str)
+                logger.debug("Could not parse FCV: %s", version_str)
         return samples
 
     async def _collect_security_opts(self, client: object) -> list[Sample]:
@@ -655,15 +736,26 @@ class DirectCollector:
         samples: list[Sample] = []
         parsed = doc.get("parsed", {})
 
-        # authorization: enabled/disabled
+        # authorization: enabled / disabled / not reported
+        #
+        # Only emit this when getCmdLineOpts actually tells us. Defaulting a
+        # missing key to "disabled" produced false CRITICALs on properly secured
+        # replica sets: keyFile-based deployments enable authorization
+        # implicitly and need not carry security.authorization at all.
+        # No sample -> the rule stays UNKNOWN, which is the honest answer.
         security = parsed.get("security", {})
-        auth = security.get("authorization", "disabled")
-        samples.append(
-            self._make_sample(
-                "mongodb_security_authorization_enabled",
-                1.0 if auth == "enabled" else 0.0,
+        auth = security.get("authorization")
+        implicit_auth = bool(security.get("keyFile") or security.get("clusterAuthMode"))
+        if auth is not None:
+            samples.append(
+                self._make_sample(
+                    "mongodb_security_authorization_enabled",
+                    1.0 if auth == "enabled" else 0.0,
+                )
             )
-        )
+        elif implicit_auth:
+            # keyFile / clusterAuthMode imply authorization is on.
+            samples.append(self._make_sample("mongodb_security_authorization_enabled", 1.0))
 
         # bindIp - may be a comma-separated list
         net = parsed.get("net", {})
@@ -683,7 +775,7 @@ class DirectCollector:
             )
         )
 
-        # TLS durumu
+        # TLS mode
         tls = parsed.get("net", {}).get("tls", {})
         tls_mode = tls.get("mode", "disabled")
         samples.append(
@@ -732,7 +824,7 @@ class DirectCollector:
         for db_info in list_dbs.get("databases", []):
             db_name = db_info.get("name")
             if not db_name or db_name in ("local", "config"):
-                # readAnyDatabase local/config kapsamaz
+                # readAnyDatabase does not cover local/config
                 continue
             try:
                 coll = client[db_name]["system.profile"]
@@ -790,10 +882,18 @@ class DirectCollector:
         ns = doc.get("ns") or db_name
         cmd = doc.get("command") or doc.get("query") or {}
 
-        # Tam sorguyu sakla (Extended JSON — ObjectId/datetime korunur)
+        # Keep the query shape. Filter VALUES are redacted unless
+        # HC_SLOW_QUERY_STORE_VALUES is on: they come straight out of production
+        # queries, can carry personal data, and are copied into the metadata
+        # database and rendered in the dashboard. Index suggestions are derived
+        # from field names (filter_keys), never from the values.
         full_command: dict = {}
         try:
-            full_command = json.loads(json_util.dumps(cmd)) if isinstance(cmd, dict) else {}
+            if isinstance(cmd, dict):
+                decoded = json.loads(json_util.dumps(cmd))
+                full_command = (
+                    decoded if settings.slow_query_store_values else _redact_values(decoded)
+                )
         except Exception:
             full_command = {}
 

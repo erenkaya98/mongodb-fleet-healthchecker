@@ -70,9 +70,15 @@
     </div>
     <div class="form-group">
       <label for="f-mongo-uri">MongoDB URI (exporter'sız doğrudan bağlantı)</label>
-      <input type="text" id="f-mongo-uri" name="mongo_uri" placeholder="mongodb://kullanici:***@10.0.0.1:27017/?authSource=admin"
+      <input type="text" id="f-mongo-uri" name="mongo_uri" placeholder="mongodb://kullanici:parola@10.0.0.1:27017/?authSource=admin"
              value="{{ target.mongo_uri or '' if target else '' }}">
-      <span class="form-hint">Doldurulursa exporter KULLANILMAZ — doğrudan MongoDB'ye bağlanır</span>
+      <span class="form-hint">
+        Doldurulursa exporter KULLANILMAZ — doğrudan MongoDB'ye bağlanır.
+        {%- if target and target.has_mongo_uri %}
+        Parola <code>***</code> olarak maskelenmiştir; olduğu gibi bırakırsanız kayıtlı
+        parola korunur, değiştirmek için URI'nin tamamını yeniden yazın.
+        {%- endif %}
+      </span>
     </div>
     <div class="form-group">
       <label for="f-notes">Notlar</label>

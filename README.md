@@ -40,6 +40,8 @@ queries from `system.profile`, EOL MongoDB versions, FCV mismatches, and auth/bi
 - **Scheduler**: `APScheduler` `AsyncIOScheduler`, 5-minute cron, leader lock via meta DB
 - **Metadata**: Separate MongoDB cluster (`motor` async driver)
 - **UI**: FastAPI + HTMX + Jinja2 server-side rendering, dark theme
+- **No runtime network dependencies**: HTMX and the IBM Plex fonts are bundled, so the
+  dashboard renders correctly on an air-gapped host
 
 ## Quick Start (container)
 
@@ -187,6 +189,8 @@ All settings via `HC_`-prefixed environment variables (see `.env.example`):
 | `HC_SLOW_QUERY_THRESHOLD_MS` | `100` | Minimum duration counted as "slow" in `system.profile` |
 | `HC_SLOW_QUERY_WINDOW_SECONDS` | `300` | Look-back window in `system.profile` (seconds) |
 | `HC_SLOW_QUERY_SNAPSHOT_MIN_MS` | `1000` | Minimum duration for a full query snapshot |
+| `HC_SLOW_QUERY_STORE_VALUES` | `false` | Store filter values, not just field names (see Security) |
+| `HC_AUTH_TOKEN` | (empty) | Shared API/dashboard token. **Empty disables authentication** |
 | `HC_SCHEDULER_CRON` | `*/5` | Cron **minute** field only |
 | `HC_SCHEDULER_LOCK_TTL` | `120` | Leader lock TTL (seconds) |
 | `HC_DISPLAY_TIMEZONE` | `UTC` | UI timezone (IANA zoneinfo name); invalid values fall back to UTC |
@@ -368,10 +372,41 @@ ruff check . && ruff format --check .
 
 ## Security
 
+### Authentication
+
+Set `HC_AUTH_TOKEN` before exposing the service to anything but localhost:
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+API clients send it as a header, the dashboard stores it in a cookie via `/login`:
+
+```bash
+curl -H "Authorization: Bearer $HC_AUTH_TOKEN" http://localhost:8000/api/status
+```
+
+`/healthz` and `/readyz` stay public so orchestrators can probe them. Everything else —
+including `/metrics` and every write endpoint — requires the token. With `HC_AUTH_TOKEN`
+unset, authentication is disabled entirely and a warning is logged at startup.
+
+The deployment section recommends `--network host`, which publishes port 8000 on every
+interface. Firewall it, or bind the container to an internal address.
+
+### Credentials and data
+
+- A target's `mongo_uri` is the only secret stored per target. It is masked (`user:***@host`)
+  in every API response and in the UI; the full value never leaves the process. Submitting
+  the masked value back leaves the stored one untouched.
 - Never commit `.env` or any CSV holding `mongo_uri` credentials. Both are covered by
   `.gitignore` and `.dockerignore`, and `pre-commit` runs gitleaks on every commit.
 - Grant the healthchecker's MongoDB user the minimum it needs: `clusterMonitor` for metrics, plus
   read access to `system.profile` on the databases you want slow-query data from.
+- Slow-query filter **values** are redacted by default (`{"userId": "<str>"}`): they come from
+  production queries, can carry personal data, and are not needed to suggest an index. Field
+  names, collection names, sort directions and limits are kept. Set
+  `HC_SLOW_QUERY_STORE_VALUES=true` only if you need the literals and have considered the
+  privacy impact.
 - Webhook URLs are masked in logs.
 
 ## Contributing

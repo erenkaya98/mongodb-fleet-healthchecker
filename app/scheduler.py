@@ -233,7 +233,7 @@ class SchedulerService:
         Steps:
         1. Acquire the leader lock
         2. Read enabled targets
-        3. Hepsini scrape et
+        3. Scrape all of them
         4. Evaluate with the rule engine
         5. Persist results
         6. Process alerts

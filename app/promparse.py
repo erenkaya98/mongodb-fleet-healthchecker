@@ -52,7 +52,7 @@ _LABEL_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"((?:[^"\\]|\\.)*)"')
 
 
 def parse(text: str) -> list[Sample]:
-    """Prometheus text exposition format string'ini parse et.
+    """Parse a Prometheus text exposition format string.
 
     '# HELP' / '# TYPE' lines and blank lines are skipped.
     """
@@ -73,7 +73,7 @@ def parse(text: str) -> list[Sample]:
         labels_str = m.group(2)
         value_str = m.group(3)
 
-        # Value parse
+        # Parse the value
         if value_str in ("NaN", "nan", "NAN"):
             value = float("nan")
         elif value_str in ("+Inf", "Inf"):
@@ -83,7 +83,7 @@ def parse(text: str) -> list[Sample]:
         else:
             value = float(value_str)
 
-        # Label parse
+        # Parse the labels
         labels: dict[str, str] = {}
         if labels_str:
             for lm in _LABEL_RE.finditer(labels_str):

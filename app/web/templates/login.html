@@ -1,0 +1,29 @@
+{# login.html — token girişi #}
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Giriş · MongoHealth</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <h1 class="login-title">MongoHealth</h1>
+    <p class="login-sub">Devam etmek için erişim token'ını girin.</p>
+
+    {% if error %}
+    <div class="login-error" role="alert">{{ error }}</div>
+    {% endif %}
+
+    <form method="post" action="/login" autocomplete="off">
+      <label for="token" class="login-label">Token</label>
+      <input type="password" id="token" name="token" required autofocus
+             class="login-input" autocomplete="current-password">
+      <button type="submit" class="btn btn-primary login-btn">Giriş</button>
+    </form>
+
+    <p class="login-hint">Token <code>HC_AUTH_TOKEN</code> ortam değişkeninde tanımlıdır.</p>
+  </main>
+</body>
+</html>

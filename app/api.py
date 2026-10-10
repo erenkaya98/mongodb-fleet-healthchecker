@@ -9,15 +9,17 @@ import json
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app.config import settings
 from app.models import (
     TargetCreate,
+    TargetOut,
     TargetUpdate,
 )
 from app.scheduler import INSTANCE_ID, get_scheduler
+from app.security import COOKIE_NAME, auth_enabled, require_auth, token_is_valid
 from app.store import (
     bulk_import_targets,
     create_target,
@@ -41,7 +43,10 @@ from app.store import (
     update_target,
 )
 
-router = APIRouter()
+# Health probes stay public so orchestrators can reach them without a token.
+public_router = APIRouter()
+# Everything else is guarded: the target list carries connection strings.
+router = APIRouter(dependencies=[Depends(require_auth)])
 
 # Jinja2 templates — custom subclass to avoid globals-cache-key issue
 # Starlette >=0.28 passes context as globals to get_template(), and Jinja2
@@ -99,13 +104,13 @@ def _now() -> datetime:
 # ── Health ──────────────────────────────────────────────────────
 
 
-@router.get("/healthz")
+@public_router.get("/healthz")
 async def healthz():
     """Kubernetes liveness probe."""
     return {"status": "ok", "instance": INSTANCE_ID}
 
 
-@router.get("/readyz")
+@public_router.get("/readyz")
 async def readyz():
     """Kubernetes readiness probe."""
     try:
@@ -150,52 +155,60 @@ async def api_status():
 # ── Targets CRUD ────────────────────────────────────────────────
 
 
-@router.get("/api/targets")
+@router.get("/api/targets", response_model=list[TargetOut])
 async def api_targets(
     enabled_only: bool = False,
     cluster: str | None = None,
     env: str | None = None,
 ):
-    """Target listesi."""
-    return await get_targets(enabled_only=enabled_only, cluster=cluster, env=env)
+    """List targets. Connection strings come back masked (see TargetOut)."""
+    targets = await get_targets(enabled_only=enabled_only, cluster=cluster, env=env)
+    return [TargetOut.from_db(t) for t in targets]
 
 
-@router.post("/api/targets")
+@router.post("/api/targets", response_model=TargetOut)
 async def api_create_target(data: TargetCreate):
     """Create a target."""
-    return await create_target(data)
+    return TargetOut.from_db(await create_target(data))
 
 
-@router.put("/api/targets/{target_id}")
+@router.put("/api/targets/{target_id}", response_model=TargetOut)
 async def api_update_target(target_id: str, data: TargetUpdate):
-    """Update a target."""
+    """Update a target.
+
+    A mongo_uri that still carries the ``***`` placeholder is the masked value
+    being sent back unchanged by a client that never saw the real one; drop it
+    so the stored connection string survives the update.
+    """
+    if data.mongo_uri and ":***@" in data.mongo_uri:
+        data = data.model_copy(update={"mongo_uri": None})
     result = await update_target(target_id, data)
     if not result:
         raise HTTPException(404, "Target not found")
-    return result
+    return TargetOut.from_db(result)
 
 
 @router.delete("/api/targets/{target_id}")
 async def api_delete_target(target_id: str):
-    """Target sil."""
+    """Delete a target."""
     ok = await delete_target(target_id)
     if not ok:
         raise HTTPException(404, "Target not found")
     return {"ok": True}
 
 
-@router.post("/api/targets/{target_id}/toggle")
+@router.post("/api/targets/{target_id}/toggle", response_model=TargetOut)
 async def api_toggle_target(target_id: str):
-    """Target enable/disable."""
+    """Enable or disable a target."""
     result = await toggle_target(target_id)
     if not result:
         raise HTTPException(404, "Target not found")
-    return result
+    return TargetOut.from_db(result)
 
 
 @router.post("/api/targets/bulk")
 async def api_bulk_import(request: Request):
-    """CSV/JSON toplu target import."""
+    """Bulk target import from CSV or JSON."""
     body = await request.body()
     content_type = request.headers.get("content-type", "")
 
@@ -286,7 +299,7 @@ async def api_run_results(run_id: str):
 
 @router.get("/targets/add-form", response_class=HTMLResponse)
 async def add_target_form(request: Request):
-    """Yeni target ekleme formu."""
+    """Form for adding a target."""
     return templates.TemplateResponse(
         "target_form.html", {"request": request, "target": None, "action": "add"}
     )
@@ -299,7 +312,8 @@ async def edit_target_form(request: Request, target_id: str):
     if not target:
         raise HTTPException(404, "Target not found")
     return templates.TemplateResponse(
-        "target_form.html", {"request": request, "target": target, "action": "edit"}
+        "target_form.html",
+        {"request": request, "target": TargetOut.from_db(target), "action": "edit"},
     )
 
 
@@ -311,7 +325,7 @@ async def bulk_import_form(request: Request):
 
 @router.post("/targets/add", response_class=HTMLResponse)
 async def handle_add_target(request: Request):
-    """HTMX form submit handler — yeni target ekle."""
+    """HTMX form submit handler for creating a target."""
     form = await request.form()
     try:
         await create_target(
@@ -346,7 +360,7 @@ async def handle_add_target(request: Request):
 
 @router.get("/api/alerts")
 async def api_alerts(state: str = "firing"):
-    """Alert listesi."""
+    """List alerts."""
     if state == "resolved":
         return await get_resolved_alerts()
     return await get_active_alerts()
@@ -430,7 +444,7 @@ async def ui_target_detail(request: Request, target_id: str):
     history = await get_target_history(target_id, hours=24)
     return templates.TemplateResponse(
         "target_detail.html",
-        {"request": request, "target": target, "history": history},
+        {"request": request, "target": TargetOut.from_db(target), "history": history},
     )
 
 
@@ -541,3 +555,44 @@ async def ui_index_suggestions_page(request: Request):
         "index_suggestions.html",
         {"request": request, "suggestions": suggestions},
     )
+
+
+# ── Login ───────────────────────────────────────────────────────
+
+
+@public_router.get("/login", response_class=HTMLResponse)
+async def login_form(request: Request):
+    """Token entry form. Browsers cannot send an Authorization header on
+    navigation, so the token is stored in a cookie instead."""
+    if not auth_enabled():
+        return RedirectResponse("/", status_code=303)
+    return templates.TemplateResponse("login.html", {"request": request, "error": None})
+
+
+@public_router.post("/login", response_class=HTMLResponse)
+async def login_submit(request: Request, token: str = Form(...)):
+    if not auth_enabled():
+        return RedirectResponse("/", status_code=303)
+    if not token_is_valid(token):
+        return templates.TemplateResponse(
+            "login.html",
+            {"request": request, "error": "Geçersiz token."},
+            status_code=401,
+        )
+    response = RedirectResponse("/", status_code=303)
+    response.set_cookie(
+        COOKIE_NAME,
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+        max_age=60 * 60 * 24 * 30,
+    )
+    return response
+
+
+@public_router.post("/logout")
+async def logout():
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(COOKIE_NAME)
+    return response

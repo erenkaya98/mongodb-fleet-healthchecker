@@ -107,6 +107,15 @@ class Settings(BaseSettings):
         description="Minimum duration for a full query snapshot (ms); shorter ones are only counted",
     )
 
+    slow_query_store_values: bool = Field(
+        default=False,
+        description=(
+            "Store slow-query filter VALUES, not just field names. Values can contain "
+            "personal data from production queries; they are copied into the metadata "
+            "database and shown in the dashboard. Index suggestions do not need them."
+        ),
+    )
+
     # ── Scheduler ─────────────────────────────────────────────
     scheduler_cron: str = Field(
         default="*/5",
@@ -165,13 +174,23 @@ class Settings(BaseSettings):
         description="Dashboard base URL (used for deep links in alert messages)",
     )
 
+    # ── Authentication ────────────────────────────────────────
+    auth_token: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Shared token for the API and dashboard. Sent as 'Authorization: Bearer <token>' "
+            "or stored in the hc_token cookie by the login form. When unset, authentication "
+            "is disabled and every endpoint is public."
+        ),
+    )
+
     # ── API / Server ──────────────────────────────────────────
-    api_host: str = Field(default="0.0.0.0", description="API bind adresi")
+    api_host: str = Field(default="0.0.0.0", description="API bind address")
     api_port: int = Field(default=8000, ge=1, le=65535, description="API port")
     api_reload: bool = Field(default=False, description="Uvicorn auto-reload")
 
     # ── Logging ───────────────────────────────────────────────
-    log_level: str = Field(default="INFO", description="Log seviyesi")
+    log_level: str = Field(default="INFO", description="Log level")
     log_json: bool = Field(
         default=False,
         description="Emit logs as JSON (structured logging)",

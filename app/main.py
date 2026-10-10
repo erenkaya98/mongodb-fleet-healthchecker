@@ -14,10 +14,11 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from app.api import router
+from app.api import public_router, router
 from app.config import settings
 from app.db import connect, disconnect
 from app.scheduler import get_scheduler, setup_signal_handlers
+from app.security import warn_if_unauthenticated
 
 # ── Logging setup ───────────────────────────────────────────────
 
@@ -55,12 +56,13 @@ def setup_logging() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Uygulama lifecycle."""
+    """Application lifecycle."""
     setup_logging()
     logger = logging.getLogger(__name__)
 
     # Startup
     logger.info("Starting MongoDB Fleet Healthchecker...")
+    warn_if_unauthenticated()
     await connect()
 
     scheduler = await get_scheduler()
@@ -85,6 +87,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.include_router(public_router)
 app.include_router(router)
 
 # Static files (HTMX, CSS)

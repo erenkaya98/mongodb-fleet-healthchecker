@@ -128,7 +128,7 @@ async def _handle_bad(
     severity_level = _SEVERITY_ORDER.get(check.status, 0)
 
     if existing is None:
-        # Yeni alert
+        # New alert
         alert = AlertRecord(
             fingerprint=fp,
             target_id=str(target.id),

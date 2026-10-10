@@ -66,6 +66,62 @@ class TargetInDB(pydantic.BaseModel):
         return "direct" if self.mongo_uri else "exporter"
 
 
+def mask_mongo_uri(uri: str | None) -> str | None:
+    """Replace the password in a MongoDB connection string with ``***``.
+
+    mongodb://user:secret@host/db  ->  mongodb://user:***@host/db
+
+    Connection strings are the only secret stored per target, so they must never
+    leave the process in full: not in API responses, not in HTML, not in logs.
+    """
+    if not uri:
+        return uri
+    scheme, sep, rest = uri.partition("://")
+    if not sep or "@" not in rest:
+        return uri
+    credentials, _, host = rest.rpartition("@")
+    user, has_pw, _ = credentials.partition(":")
+    if not has_pw:
+        return uri
+    return f"{scheme}://{user}:***@{host}"
+
+
+class TargetOut(pydantic.BaseModel):
+    """A target as exposed over the API and rendered in the UI.
+
+    Identical to TargetInDB except that mongo_uri is masked. Build responses
+    from this model, never from TargetInDB: the raw connection string carries
+    the password for the monitored node.
+    """
+
+    id: str | None = pydantic.Field(default=None, alias="_id")
+    ip: str
+    port: int = 9216
+    mongo_port: int = 27017
+    hostname: str | None = None
+    cluster: str | None = None
+    role: str | None = None
+    env: str | None = None
+    enabled: bool = True
+    exporter_url: str | None = None
+    mongo_uri: str | None = None  # masked
+    has_mongo_uri: bool = False
+    check_profile: str = "default"
+    labels: dict[str, str] = pydantic.Field(default_factory=dict)
+    notes: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    model_config = pydantic.ConfigDict(populate_by_name=True)
+
+    @classmethod
+    def from_db(cls, target: TargetInDB) -> TargetOut:
+        data = target.model_dump(by_alias=False)
+        data["has_mongo_uri"] = bool(target.mongo_uri)
+        data["mongo_uri"] = mask_mongo_uri(target.mongo_uri)
+        return cls(**data)
+
+
 class TargetCreate(pydantic.BaseModel):
     """Payload for creating a target."""
 
