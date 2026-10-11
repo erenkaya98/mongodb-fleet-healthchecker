@@ -177,7 +177,7 @@ class TestCollectorErrors:
         result = await collector.scrape_target(target)
         assert result.ok is False
         assert result.http_status == 404
-        assert result.attempts == 1  # 4xx'te retry yok
+        assert result.attempts == 1  # no retry on 4xx
 
     @pytest.mark.asyncio
     async def test_connection_refused(self, collector):
@@ -650,7 +650,7 @@ class TestDirectCollectorWiredTiger:
             server_status={
                 "ok": 1,
                 "connections": {},
-                # wiredTiger yok
+                # no wiredTiger section
             }
         )
         mock_client = MockClient(admin=admin)
@@ -680,7 +680,7 @@ class TestDirectCollectorWiredTiger:
                         "bytes read into cache": 5_000_000_000,
                         "bytes written from cache": 2_000_000_000,
                     },
-                    # 8.0: concurrentTransactions yok
+                    # 8.0: no concurrentTransactions section
                     "transaction": {
                         "transaction checkpoint min time (msecs)": 50,
                         "transaction checkpoint max time (msecs)": 3000,
@@ -842,13 +842,25 @@ class TestDirectCollectorSecurity:
         return admin
 
     @pytest.mark.asyncio
-    async def test_authorization_absent_emits_no_sample(self, direct_collector, monkeypatch):
-        """Regression: a missing security.authorization is not "disabled".
+    async def test_absent_authorization_falls_back_to_connection_status(
+        self, direct_collector, monkeypatch
+    ):
+        """A missing security.authorization is answered by connectionStatus.
 
-        The first implementation defaulted the missing key to "disabled", which
-        reported auth as off on correctly secured clusters and -- combined with a
-        public bindIp -- produced a CRITICAL. Emitting nothing leaves the rule
-        UNKNOWN instead of raising a false alarm.
+        This rule has now been wrong in two different directions. First it
+        defaulted the missing key to "disabled", reporting auth as off on
+        correctly secured clusters and -- combined with a public bindIp --
+        raising a false CRITICAL. The fix for that emitted nothing instead,
+        which left the rule UNKNOWN; because UNKNOWN outranks WARNING, nodes
+        hit by it stopped showing their real warnings.
+
+        The answer is to stop asking getCmdLineOpts, whose security key only
+        exists when it was written out explicitly, and ask the server what it
+        is actually doing. Here the connection is anonymous yet getCmdLineOpts
+        succeeded, so there is genuinely no access control -> 0.0.
+
+        See test_collector_security_auth.py for the full source-precedence
+        matrix.
         """
         admin = self._opts_admin({"net": {"bindIp": "0.0.0.0"}})
         monkeypatch.setattr(direct_collector, "_get_client", lambda t: MockClient(admin=admin))
@@ -856,8 +868,8 @@ class TestDirectCollectorSecurity:
         target = TargetInDB(ip="127.0.0.1", mongo_uri="mongodb://localhost:27017", enabled=True)
         result = await direct_collector.scrape_target(target)
 
-        auth = [s for s in result.samples if s.name == "mongodb_security_authorization_enabled"]
-        assert auth == [], "no authorization sample should be emitted when it is not reported"
+        auth = next(s for s in result.samples if s.name == "mongodb_security_authorization_enabled")
+        assert auth.value == 0.0
         # bindIp is still reported
         bindip = next(s for s in result.samples if s.name == "mongodb_net_bindip_public")
         assert bindip.value == 1.0

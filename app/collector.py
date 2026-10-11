@@ -736,26 +736,53 @@ class DirectCollector:
         samples: list[Sample] = []
         parsed = doc.get("parsed", {})
 
-        # authorization: enabled / disabled / not reported
+        # authorization: enabled / disabled
         #
-        # Only emit this when getCmdLineOpts actually tells us. Defaulting a
-        # missing key to "disabled" produced false CRITICALs on properly secured
-        # replica sets: keyFile-based deployments enable authorization
-        # implicitly and need not carry security.authorization at all.
-        # No sample -> the rule stays UNKNOWN, which is the honest answer.
+        # getCmdLineOpts alone cannot answer this. ``security.authorization``
+        # only appears when it was written explicitly in the config file or on
+        # the command line; plenty of correctly secured nodes never carry it.
+        # Treating the missing key as "disabled" produced false CRITICALs;
+        # treating it as unknown pushed the node to UNKNOWN, which outranks
+        # WARNING and hid that node's real warnings. Both are wrong.
+        #
+        # So three sources are combined, and any positive evidence wins:
+        #   connectionStatus.authInfo.authenticatedUsers non-empty
+        #       -> this very connection authenticated; auth is definitely on
+        #   security.authorization == "enabled"
+        #   keyFile / clusterAuthMode present
+        #       -> internal cluster auth implies authorization is on even
+        #          though the authorization key itself may be absent
+        #
+        # Only with no positive evidence anywhere do we claim "disabled", and
+        # only when something actually told us: either the config declared it,
+        # or connectionStatus answered and reported an anonymous connection.
+        # The latter is conclusive because getCmdLineOpts succeeded above -- a
+        # server that hands its startup configuration to an unauthenticated
+        # client has no access control. If neither source speaks, no sample is
+        # emitted and the rule stays UNKNOWN, which is the honest answer.
         security = parsed.get("security", {})
-        auth = security.get("authorization")
+        declared = security.get("authorization")
         implicit_auth = bool(security.get("keyFile") or security.get("clusterAuthMode"))
-        if auth is not None:
+
+        authenticated = False
+        conn_status_answered = False
+        try:
+            status = await client.admin.command("connectionStatus", check=False)
+            conn_status_answered = True
+            authenticated = bool((status.get("authInfo") or {}).get("authenticatedUsers"))
+        except Exception as e:
+            logger.debug("connectionStatus unavailable: %s", e)
+
+        auth_enabled: float | None = None
+        if authenticated or declared == "enabled" or implicit_auth:
+            auth_enabled = 1.0
+        elif declared == "disabled" or conn_status_answered:
+            auth_enabled = 0.0
+
+        if auth_enabled is not None:
             samples.append(
-                self._make_sample(
-                    "mongodb_security_authorization_enabled",
-                    1.0 if auth == "enabled" else 0.0,
-                )
+                self._make_sample("mongodb_security_authorization_enabled", auth_enabled)
             )
-        elif implicit_auth:
-            # keyFile / clusterAuthMode imply authorization is on.
-            samples.append(self._make_sample("mongodb_security_authorization_enabled", 1.0))
 
         # bindIp - may be a comma-separated list
         net = parsed.get("net", {})
